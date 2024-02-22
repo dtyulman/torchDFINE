@@ -60,11 +60,11 @@ class DFINE(nn.Module):
         self._set_dims_and_scales()
 
         # Initialize LDM parameters
-        A, C, W_log_diag, R_log_diag, mu_0, Lambda_0 = self._init_ldm_parameters()
+        A, B, C, W_log_diag, R_log_diag, mu_0, Lambda_0 = self._init_ldm_parameters()
 
         # Initialize the LDM
-        self.ldm = LDM(dim_x=self.dim_x, dim_a=self.dim_a, 
-                       A=A, C=C, 
+        self.ldm = LDM(dim_x=self.dim_x, dim_u=self.dim_u, dim_a=self.dim_a, 
+                       A=A, B=B, C=C, 
                        W_log_diag=W_log_diag, R_log_diag=R_log_diag,
                        mu_0=mu_0, Lambda_0=Lambda_0,
                        is_W_trainable=self.config.model.is_W_trainable,
@@ -99,6 +99,7 @@ class DFINE(nn.Module):
         # Set the dimensions
         self.dim_y = self.config.model.dim_y
         self.dim_a = self.config.model.dim_a
+        self.dim_u = self.config.model.dim_u
         self.dim_x = self.config.model.dim_x
 
         if self.config.model.supervise_behv:
@@ -156,7 +157,8 @@ class DFINE(nn.Module):
         '''
 
         kernel_initializer_fn = get_kernel_initializer_function(self.config.model.ldm_kernel_initializer)
-        A = kernel_initializer_fn(self.config.model.init_A_scale * torch.eye(self.dim_x, dtype=torch.float32)) 
+        A = kernel_initializer_fn(self.config.model.init_A_scale * torch.eye(self.dim_x, dtype=torch.float32))
+        B = kernel_initializer_fn(self.config.model.init_B_scale * torch.eye(self.dim_x, self.dim_u, dtype=torch.float32))
         C = kernel_initializer_fn(self.config.model.init_C_scale * torch.randn(self.dim_a, self.dim_x, dtype=torch.float32)) 
 
         W_log_diag = torch.log(kernel_initializer_fn(torch.diag(self.config.model.init_W_scale * torch.eye(self.dim_x, dtype=torch.float32))))
@@ -165,18 +167,19 @@ class DFINE(nn.Module):
         mu_0 = kernel_initializer_fn(torch.zeros(self.dim_x, dtype=torch.float32))
         Lambda_0 = kernel_initializer_fn(self.config.model.init_cov * torch.eye(self.dim_x, dtype=torch.float32))
 
-        return A, C, W_log_diag, R_log_diag, mu_0, Lambda_0
+        return A, B, C, W_log_diag, R_log_diag, mu_0, Lambda_0
 
     
-    def forward(self, y, mask=None):
+    def forward(self, y, u=None, mask=None):
         '''
         Forward pass for DFINE Model
 
         Parameters: 
         ------------
         - y: torch.Tensor, shape: (num_seq, num_steps, dim_y), High-dimensional neural observations
-        - mask: torch.Tensor, shape: (num_seq, num_steps, 1), Mask input which shows whether 
-                                                              observations at each timestep exist (1) or are missing (0)
+        - u: torch.Tensor, shape: (num_seq, num_steps, dim_u), Control input vectors
+        - mask: torch.Tensor, shape: (num_seq, num_steps, 1), 
+            Mask input which shows whether observations at each timestep exist (1) or are missing (0)
 
         Returns: 
         ------------
@@ -220,14 +223,15 @@ class DFINE(nn.Module):
         a_hat = a_hat.view(-1, num_steps, self.dim_a)
 
         # Run LDM to infer filtered and smoothed dynamic latent factors
-        x_pred, x_filter, x_smooth, Lambda_pred, Lambda_filter, Lambda_smooth = self.ldm(a=a_hat, mask=mask, do_smoothing=True)
+        x_pred, x_filter, x_smooth, Lambda_pred, Lambda_filter, Lambda_smooth = self.ldm(a=a_hat, u=u, mask=mask, do_smoothing=True)
         A = self.ldm.A.repeat(num_seq, num_steps, 1, 1)
+        B = self.ldm.B.repeat(num_seq, num_steps, 1, 1)
         C = self.ldm.C.repeat(num_seq, num_steps, 1, 1)
         a_pred = (C @ x_pred.unsqueeze(dim=-1)).squeeze(dim=-1) #  (num_seq, num_steps, dim_a, dim_x) x (num_seq, num_steps, dim_x, 1) --> (num_seq, num_steps, dim_a)
         a_filter = (C @ x_filter.unsqueeze(dim=-1)).squeeze(dim=-1) #  (num_seq, num_steps, dim_a, dim_x) x (num_seq, num_steps, dim_x, 1) --> (num_seq, num_steps, dim_a)
         a_smooth = (C @ x_smooth.unsqueeze(dim=-1)).squeeze(dim=-1) #  (num_seq, num_steps, dim_a, dim_x) x (num_seq, num_steps, dim_x, 1) --> (num_seq, num_steps, dim_a)
         
-        # Remove the last timestep of predictions since it's T+1|T, which is not of our interest
+        # Remove the last timestep of predictions since it's T+1|T, which is not of interest to us
         x_pred = x_pred[:, :-1, :]
         Lambda_pred = Lambda_pred[:, :-1, :, :]
         a_pred = a_pred[:, :-1, :]
@@ -259,11 +263,11 @@ class DFINE(nn.Module):
                           x_pred=x_pred, x_filter=x_filter, x_smooth=x_smooth,
                           Lambda_pred=Lambda_pred, Lambda_filter=Lambda_filter, Lambda_smooth=Lambda_smooth,
                           y_hat=y_hat, y_pred=y_pred, y_filter=y_filter, y_smooth=y_smooth, 
-                          A=A, C=C, behv_hat=behv_hat)
+                          A=A, B=B, C=C, behv_hat=behv_hat)
         return model_vars
 
 
-    def get_k_step_ahead_prediction(self, model_vars, k):
+    def get_k_step_ahead_prediction(self, model_vars, k, u=None):
         '''
         Performs k-step ahead prediction of manifold latent factors, dynamic latent factors and neural observations. 
 
@@ -272,6 +276,7 @@ class DFINE(nn.Module):
         - model_vars: dict, Dictionary returned after forward(...) call. See the definition of forward(...) function for information. 
             - x_filter: torch.Tensor, shape: (num_seq, num_steps, dim_x), Batch of filtered estimates of dynamic latent factors
             - A: torch.Tensor, shape: (num_seq, num_steps, dim_x, dim_x) or (dim_x, dim_x), State transition matrix of LDM
+            - B: torch.Tensor, shape: (num_seq, num_steps, dim_x, dim_u) or (dim_x, dim_u), Control-input matrix of LDM
             - C: torch.Tensor, shape: (num_seq, num_steps, dim_y, dim_x) or (dim_y, dim_x), Observation matrix of LDM
         - k: int, Number of steps ahead for prediction
 
@@ -286,31 +291,36 @@ class DFINE(nn.Module):
         '''
 
         # Check whether provided k value is valid or not
-        if k <= 0 or not isinstance(k, int):
-            assert False, 'Number of steps ahead prediction value is invalid or of wrong type, k must be a positive integer!'
+        assert k>0 and isinstance(k, int), 'Number of steps ahead prediction value is invalid or of wrong type, k must be a positive integer!'
 
         # Extract the required variables from model_vars dictionary
         x_filter = model_vars['x_filter']
         A = model_vars['A']
+        B = model_vars['B']
         C = model_vars['C']
 
         # Get the required dimensions
         num_seq, num_steps, _ = x_filter.shape
+        
+        # If control input is None, default to zeroes
+        if u is None:
+            u = torch.zeros(num_seq, num_steps, self.dim_u, dtype=torch.float32)
 
-        # Check if shapes of A and C are 4D where first 2 dimensions are (number of trials/time segments) and (number of steps)
+        # Check if shapes of A, B, and C are 4D where first 2 dimensions are (number of trials/time segments) and (number of steps)       
         if len(A.shape) == 2:
             A = A.repeat(num_seq, num_steps, 1, 1)
-
+        if len(B.shape) == 2:
+            B = B.repeat(num_seq, num_steps, 1, 1)
         if len(C.shape) == 2:
             A = A.repeat(num_seq, num_steps, 1, 1)
 
         # Here is where k-step ahead prediction is iteratively performed
-        x_pred_k = x_filter[:, :-k, ...] # [x_k|0, x_{k+1}|1, ..., x_{T}|{T-k}]
+        x_pred_k = x_filter[:, :-k, ...] # [x_{k|0}, x_{(k+1)|1}, ..., x_{T|(T-k)}]
         for i in range(1, k+1):
             if i != k:
-                x_pred_k = (A[:, i:-(k-i), ...] @ x_pred_k.unsqueeze(dim=-1)).squeeze(dim=-1)  
+                x_pred_k = (A[:, i:-(k-i), ...] @ x_pred_k.unsqueeze(dim=-1) + B[:, i:-(k-i), ...] @ u[:, i:-(k-i), ...].unsqueeze(dim=-1)).squeeze(dim=-1)  
             else:
-                x_pred_k = (A[:, i:, ...] @ x_pred_k.unsqueeze(dim=-1)).squeeze(dim=-1)
+                x_pred_k = (A[:, i:,       ...] @ x_pred_k.unsqueeze(dim=-1) + B[:, i:,       ...] @ u[:, i:,       ...].unsqueeze(dim=-1)).squeeze(dim=-1)
         a_pred_k = (C[:, k:, ...] @ x_pred_k.unsqueeze(dim=-1)).squeeze(dim=-1)
 
         # After obtaining k-step ahead predicted manifold latent factors, they're decoded to obtain k-step ahead predicted neural observations
@@ -322,7 +332,7 @@ class DFINE(nn.Module):
         return y_pred_k, a_pred_k, x_pred_k
 
     
-    def compute_loss(self, y, model_vars, mask=None, behv=None):
+    def compute_loss(self, y, model_vars, u=None, mask=None, behv=None):
         '''
         Computes k-step ahead predicted MSE loss, regularization loss and behavior reconstruction loss
         if supervised model is being trained. 
@@ -358,7 +368,7 @@ class DFINE(nn.Module):
         # Iterate over multiple steps ahead
         k_steps_mse_sum = 0  
         for _, k in enumerate(self.config.loss.steps_ahead):
-            y_pred_k, _, _ = self.get_k_step_ahead_prediction(model_vars, k=k)
+            y_pred_k, _, _ = self.get_k_step_ahead_prediction(model_vars, k=k, u=u)
             mse_pred = compute_mse(y_flat=y[:, k:, :].reshape(-1, self.dim_y), 
                                    y_hat_flat=y_pred_k.reshape(-1, self.dim_y),
                                    mask_flat=mask[:, k:, :].reshape(-1,))

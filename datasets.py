@@ -14,13 +14,14 @@ class DFINEDataset(Dataset):
     Dataset class for DFINE. 
     '''
     
-    def __init__(self, y, behv=None, mask=None):
+    def __init__(self, y, u=None, behv=None, mask=None):
         '''
-        Initializer for DFINEDataset. Note that this is a subclass of torch.utils.data.Dataset. \
+        Initializer for DFINEDataset. Note that this is a subclass of torch.utils.data.Dataset. 
 
         Parameters: 
         ------------
         - y: torch.Tensor, shape: (num_seq, num_steps, dim_y), High dimensional neural observations. 
+        - u: torch.Tensor, shape: (num_seq, num_steps, dim_u), Control input vectors. 
         - behv: torch.Tensor, shape: (num_seq, num_steps, dim_behv), Behavior data. None by default.
         - mask: torch.Tensor, shape: (num_seq, num_steps, 1), Mask for manifold latent factors which shows whether 
                                                               observations at each timestep exists (1) or are missing (0). 
@@ -28,6 +29,12 @@ class DFINEDataset(Dataset):
         '''
         
         self.y = y
+        
+        # If control input is not provided, initialize it with 1-dimensional zero input 
+        if u is None:
+            self.u = torch.zeros(*y.shape[:-1], 1, dtype=torch.float32)
+        else:
+            self.u = u
 
         # If behv is not provided, initialize it by zeros. 
         if behv is None:
@@ -53,6 +60,5 @@ class DFINEDataset(Dataset):
     def __getitem__(self, idx):
         '''
         Returns a tuple of neural observations, behavior and mask segments
-        '''
-
-        return self.y[idx, :, :], self.behv[idx, :, :], self.mask[idx, :, :]
+        '''    
+        return self.y[idx, :, :], self.u[idx, :, :], self.behv[idx, :, :], self.mask[idx, :, :]

@@ -40,7 +40,7 @@ class TrainerDFINE(BaseTrainer):
                                        Please see config.py for the hyperparameters, their default values and definitions. 
         '''
 
-        super(TrainerDFINE, self).__init__(config)
+        super().__init__(config)
 
         # Initialize training time statistics
         self.training_time = 0
@@ -187,11 +187,12 @@ class TrainerDFINE(BaseTrainer):
 
                 # Carry data to device
                 batch = carry_to_device(data=batch, device=self.device)
-                y_batch, behv_batch, mask_batch = batch
+                y_batch, u_batch, behv_batch, mask_batch = batch
 
                 # Perform forward pass and compute loss
-                model_vars = self.dfine(y=y_batch, mask=mask_batch)
+                model_vars = self.dfine(y=y_batch, u=u_batch, mask=mask_batch)
                 loss, loss_dict = self.dfine.compute_loss(y=y_batch, 
+                                                          u=u_batch,
                                                           model_vars=model_vars, 
                                                           mask=mask_batch, 
                                                           behv=behv_batch)
@@ -279,16 +280,17 @@ class TrainerDFINE(BaseTrainer):
 
                     # Carry data to device
                     batch = carry_to_device(data=batch, device=self.device)
-                    y_batch, behv_batch, mask_batch = batch
+                    y_batch, u_batch, behv_batch, mask_batch = batch
                     y_all.append(y_batch)
                     mask_all.append(mask_batch)
 
                     # Perform forward pass and compute loss
                     model_vars = self.dfine(y=y_batch, mask=mask_batch)
                     _, loss_dict = self.dfine.compute_loss(y=y_batch, 
-                                                        model_vars=model_vars, 
-                                                        mask=mask_batch, 
-                                                        behv=behv_batch)
+                                                           u=u_batch,
+                                                           model_vars=model_vars, 
+                                                           mask=mask_batch, 
+                                                           behv=behv_batch)
 
                     # Update metrics 
                     self._update_metrics(loss_dict=loss_dict, 
@@ -353,7 +355,7 @@ class TrainerDFINE(BaseTrainer):
         # Start iterating over the epochs
         for epoch in range(self.start_epoch, self.config.train.num_epochs + 1):
             # Perform validation with the initialized model
-            if epoch == self.start_epoch:
+            if epoch == self.start_epoch and isinstance(valid_loader, torch.utils.data.dataloader.DataLoader):
                 self.valid_epoch(epoch, valid_loader, verbose=False)
 
             # Perform training iteration over train_loader

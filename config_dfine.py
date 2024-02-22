@@ -31,8 +31,12 @@ _config.model.dim_y = 30
 _config.model.dim_a = 16
 # Dimensionality of dynamic latent factor, it's recommended to set it same as dim_a (above), please see Extended Data Fig. 8
 _config.model.dim_x = 16
+# Dimensionality of control input
+_config.model.dim_u = 16
 # Initialization scale of LDM state transition matrix
 _config.model.init_A_scale = 1
+# Initialization scale of control-input matrix
+_config.model.init_B_scale = 1
 # Initialization scale of LDM observation matrix
 _config.model.init_C_scale = 1
 # Initialization scale of LDM process noise covariance matrix
@@ -60,7 +64,7 @@ _config.model.which_behv_dims = [0,1,2,3]
 # Boolean for whether to decode behavior from a_smooth
 _config.model.behv_from_smooth = True
 # Main save directory for DFINE results, plots and checkpoints
-_config.model.save_dir = 'D:/DATA/DFINE_results'
+_config.model.save_dir = './results'
 # Number of steps to save DFINE checkpoints
 _config.model.save_steps = 10
 
