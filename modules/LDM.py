@@ -48,23 +48,18 @@ class LDM(nn.Module):
         self.is_W_trainable = kwargs.pop('is_W_trainable', True)
         self.is_R_trainable = kwargs.pop('is_R_trainable', True)
 
-        # Initializer for identity matrix, zeros matrix and ones matrix
-        self.eye_init = lambda shape, dtype=torch.float32: torch.eye(*shape, dtype=dtype)
-        self.zeros_init = lambda shape, dtype=torch.float32: torch.zeros(*shape, dtype=dtype)
-        self.ones_init = lambda shape, dtype=torch.float32: torch.ones(*shape, dtype=dtype)
-
         # Get initial values for LDM parameters
-        self.A = kwargs.pop('A', self.eye_init((self.dim_x, self.dim_x), dtype=torch.float32).unsqueeze(dim=0)).type(torch.FloatTensor)
-        self.B = kwargs.pop('B', self.eye_init((self.dim_x, self.dim_u), dtype=torch.float32).unsqueeze(dim=0)).type(torch.FloatTensor)
-        self.C = kwargs.pop('C', self.eye_init((self.dim_a, self.dim_x), dtype=torch.float32).unsqueeze(dim=0)).type(torch.FloatTensor)
+        self.A = kwargs.pop('A', torch.eye(self.dim_x, self.dim_x, dtype=torch.float32).unsqueeze(dim=0)).type(torch.FloatTensor)
+        self.B = kwargs.pop('B', torch.eye(self.dim_x, self.dim_u, dtype=torch.float32).unsqueeze(dim=0)).type(torch.FloatTensor)
+        self.C = kwargs.pop('C', torch.eye(self.dim_a, self.dim_x, dtype=torch.float32).unsqueeze(dim=0)).type(torch.FloatTensor)
         
         # Get KF initial conditions
-        self.mu_0 = kwargs.pop('mu_0', self.zeros_init((self.dim_x, ), dtype=torch.float32)).type(torch.FloatTensor)
-        self.Lambda_0 = kwargs.pop('Lambda_0', self.eye_init((self.dim_x, self.dim_x), dtype=torch.float32)).type(torch.FloatTensor)
+        self.mu_0 = kwargs.pop('mu_0', torch.zeros(self.dim_x, dtype=torch.float32)).type(torch.FloatTensor)
+        self.Lambda_0 = kwargs.pop('Lambda_0', torch.eye(self.dim_x, self.dim_x, dtype=torch.float32)).type(torch.FloatTensor)
 
         # Get initial process and observation noise parameters
-        self.W_log_diag = kwargs.pop('W_log_diag', self.ones_init((self.dim_x, ), dtype=torch.float32)).type(torch.FloatTensor)
-        self.R_log_diag = kwargs.pop('R_log_diag', self.ones_init((self.dim_a, ), dtype=torch.float32)).type(torch.FloatTensor)
+        self.W_log_diag = kwargs.pop('W_log_diag', torch.ones(self.dim_x, dtype=torch.float32)).type(torch.FloatTensor)
+        self.R_log_diag = kwargs.pop('R_log_diag', torch.ones(self.dim_a, dtype=torch.float32)).type(torch.FloatTensor)
 
         # Register trainable parameters to module
         self._register_params()
