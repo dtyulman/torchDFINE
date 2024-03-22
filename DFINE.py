@@ -217,10 +217,10 @@ class DFINE(nn.Module):
             mask = torch.ones(y.shape[:-1], dtype=torch.float32).unsqueeze(dim=-1)
 
         # Get the encoded low-dimensional manifold factors (project via nonlinear manifold embedding) -> the outputs are (num_seq * num_steps, dim_a)
-        a_hat = self.encoder(y.view(-1, self.dim_y))
+        a_hat = self.encoder(y.view(num_seq*num_steps, self.dim_y))
 
         # Reshape the manifold latent factors back into 3D structure (num_seq, num_steps, dim_a)
-        a_hat = a_hat.view(-1, num_steps, self.dim_a)
+        a_hat = a_hat.view(num_seq, num_steps, self.dim_a)
 
         # Run LDM to infer filtered and smoothed dynamic latent factors
         x_pred, x_filter, x_smooth, Lambda_pred, Lambda_filter, Lambda_smooth = self.ldm(a=a_hat, u=u, mask=mask, do_smoothing=True)
@@ -295,9 +295,9 @@ class DFINE(nn.Module):
 
         # Extract the required variables from model_vars dictionary
         x_filter = model_vars['x_filter']
-        A = model_vars['A']
-        B = model_vars['B']
-        C = model_vars['C']
+        A = model_vars['A'] if 'A' in model_vars else self.ldm.A
+        B = model_vars['B'] if 'B' in model_vars else self.ldm.B
+        C = model_vars['C'] if 'C' in model_vars else self.ldm.C
 
         # Get the required dimensions
         num_seq, num_steps, _ = x_filter.shape
@@ -312,7 +312,7 @@ class DFINE(nn.Module):
         if len(B.shape) == 2:
             B = B.repeat(num_seq, num_steps, 1, 1)
         if len(C.shape) == 2:
-            A = A.repeat(num_seq, num_steps, 1, 1)
+            C = C.repeat(num_seq, num_steps, 1, 1)
 
         # Here is where k-step ahead prediction is iteratively performed
         x_pred_k = x_filter[:, :-k, ...] # [x_{k|0}, x_{(k+1)|1}, ..., x_{T|(T-k)}]

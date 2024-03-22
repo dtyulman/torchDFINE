@@ -15,8 +15,8 @@ class LDM(nn.Module):
     given a batch of trials/segments/time-series. 
 
     LDM equations are as follows:
-    x_{t+1} = Ax_{t} + Bu_{t} + w_{t}; cov(w_{t}) = W
-    a_{t} = Cx_{t} + r_{t}; cov(r_{t}) = R
+    x_{t+1} = A*x_t + B*u_t + w_t , cov(w_t) = W
+    a_t     = C*x_t + r_t         , cov(r_t) = R
     '''
 
     def __init__(self, **kwargs):
@@ -169,7 +169,7 @@ class LDM(nn.Module):
 
         # To make sure we do not accidentally use the real outputs in the steps with missing values, set them to a dummy value, e.g., 0.
         # The dummy values of observations at masked points are irrelevant because:
-        # Kalman disregards the observations by setting Kalman Gain to 0 in K = torch.mul(K, mask[:, t, ...].unsqueeze(dim=1))
+        # Kalman disregards the observations by setting Kalman Gain to 0 in K = torch.mul(K, mask[:, t, ...].unsqueeze(dim=1)) @ line 205
         a_masked = torch.mul(a, mask) # (num_seq, num_steps, dim_a) x (num_seq, num_steps, 1)
         
         # Initialize mu_0 and Lambda_0 
