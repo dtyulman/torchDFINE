@@ -7,6 +7,7 @@ Shanechi Lab, University of Southern California
 
 import torch 
 import torch.nn as nn
+from torch.distributions.multivariate_normal import MultivariateNormal
 
 
 class LDM(nn.Module):
@@ -127,6 +128,24 @@ class LDM(nn.Module):
         W = torch.diag(torch.exp(self.W_log_diag))
         R = torch.diag(torch.exp(self.R_log_diag))
         return W, R
+    
+    
+    def step(self, x, u=None, noise=False):
+        W, R = self._get_covariance_matrices()
+            
+        # Step dynamics
+        x_next = self.A @ x         
+        if u is not None:
+            x_next += self.B @ u
+        if noise:
+            x_next += MultivariateNormal(torch.zeros(self.dim_x), W).sample()
+            
+        # Generate manifold latent
+        a_next = self.C @ x_next.squeeze()
+        if noise:
+            a_next += MultivariateNormal(torch.zeros(self.dim_a), R).sample()
+            
+        return x_next, a_next
     
 
     def compute_forwards(self, a, u=None, mask=None):

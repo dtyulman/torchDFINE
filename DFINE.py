@@ -170,6 +170,12 @@ class DFINE(nn.Module):
         return A, B, C, W_log_diag, R_log_diag, mu_0, Lambda_0
 
     
+    def step(self, x, u=None, noise=False):
+        x_next, a_next = self.ldm.step(x, u, noise)
+        y_next = self.decoder(a_next)  
+        return x_next, a_next, y_next
+           
+
     def forward(self, y, u=None, mask=None):
         '''
         Forward pass for DFINE Model

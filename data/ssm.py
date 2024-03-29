@@ -8,9 +8,9 @@ from plot_utils import prep_axes
 
 class NonlinearStateSpaceModel():
     """
-    x_{t+1} = A(x_t) + B*u_t + q_t,   q_t ~ N(0,Q)
-    a_t     = C*x_t + r_t,           w_t ~ N(0,R) 
-    y_t     = f(a_t) + s_t,          r_t ~ N(0,S)
+    Dynamic latent:  x_{t+1} = A(x_t) + B*u_t + q_t,  q_t ~ N(0,Q)
+    Manifold latent:     a_t = C*x_t + r_t,           w_t ~ N(0,R) 
+    Observation:         y_t = f(a_t) + s_t,          r_t ~ N(0,S)
     """
     def __init__(self, A_fn,B,C,f, Q,R,S, noise=True):            
         #convenience variables
@@ -34,7 +34,9 @@ class NonlinearStateSpaceModel():
         self.R_distr = MultivariateNormal(torch.zeros(self.dim_a), R) #[a,a]
         self.S_distr = MultivariateNormal(torch.zeros(self.dim_y), S) #[y,y]
     
-        self.global_noise_toggle = noise #if False, removes all noise from the system
+        #if False, removes all noise from the system
+        self.global_noise_toggle = noise 
+        
     
     def __repr__(self):
         return (f'{self.A_fn}\n'
@@ -48,7 +50,7 @@ class NonlinearStateSpaceModel():
                 f'S={self.S_distr.covariance_matrix.numpy()}\n')
          
                   
-    def _step_x(self, x, u=None):
+    def step_dynamic_latent(self, x, u=None):
         x_next = self.A_fn( x )
         if u is not None:
             x_next += self.B @ u 
@@ -57,14 +59,14 @@ class NonlinearStateSpaceModel():
         return x_next
     
     
-    def _compute_a(self, x):
+    def compute_manifold_latent(self, x):
         a = self.C @ x
         if self.global_noise_toggle:
             a += self.R_distr.sample()
         return a
     
     
-    def _compute_y(self, a, noise=True):
+    def compute_observation(self, a, noise=True):
         y = self.f( a )
         if self.global_noise_toggle and noise:
             y += self.S_distr.sample()
@@ -72,9 +74,9 @@ class NonlinearStateSpaceModel():
     
     
     def step(self, x, u=None):     
-        x_next = self._step_x(x, u)
-        a_next = self._compute_a(x_next)
-        y_next = self._compute_y(a_next)      
+        x_next = self.step_dynamic_latent(x, u)
+        a_next = self.compute_manifold_latent(x_next)
+        y_next = self.compute_observation(a_next)      
         return x_next, a_next, y_next
     
     
@@ -93,11 +95,10 @@ class NonlinearStateSpaceModel():
         
         for b in range(_num_seqs): #TODO: vectorize         
             x_seq[b,0] = x0[b]       
-            a_seq[b,0] = self._compute_a(x_seq[b,0])
-            y_seq[b,0] = self._compute_y(a_seq[b,0])            
+            a_seq[b,0] = self.compute_manifold_latent(x_seq[b,0])
+            y_seq[b,0] = self.compute_observation(a_seq[b,0])            
             for t in range(1, num_steps):
                 x_seq[b,t], a_seq[b,t], y_seq[b,t] = self.step(x_seq[b,t-1], u_seq[b,t-1])     
-
 
         if num_seqs is None:
             x_seq, a_seq, y_seq = x_seq.squeeze(0), a_seq.squeeze(0), y_seq.squeeze(0)          
@@ -131,7 +132,7 @@ def plot_parametric(seq, t_on=None, t_off=None, mode='scatter', add_cbar=True, a
     if t_on is None: t_on = 0
     if t_off is None: t_off = T-1
     T_ctrl = t_off-t_on+1    
-    default = [.5, .5, .5, 1.] #GRBA grey
+    default = [.5, .5, .5, 1.] #RGBA grey
     cmap = plt.cm.jet
     color = np.vstack([np.tile(default, (t_on, 1)), #[0 ... t_on-1]
                        cmap(np.linspace(0, 1, T_ctrl)), #[t_on ... t_off]
@@ -154,18 +155,7 @@ def plot_parametric(seq, t_on=None, t_off=None, mode='scatter', add_cbar=True, a
         ax.set_zlabel(f'${varname}_3$')
     
     return fig, ax
-    
-    
-
-def plot_x(x_seq, ax=None):
-    fig, ax = prep_axes(ax)
-    
-    ax.plot(x_seq)
-    ax.set_xlabel('Time')
-    ax.set_ylabel('x')
-    
-    return fig, ax
-
+        
 
 #%%
 class AffineTransformation():
