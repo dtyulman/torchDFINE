@@ -15,14 +15,14 @@ import torch.nn as nn
 
 class DFINE(nn.Module):
     '''
-    DFINE (Dynamical Flexible Inference for Nonlinear Embeddings) Model. 
+    DFINE (Dynamical Flexible Inference for Nonlinear Embeddings) Model.
 
-    DFINE is a novel neural network model of neural population activity with the ability to perform 
-    flexible inference while modeling the nonlinear latent manifold structure and linear temporal dynamics. 
-    To model neural population activity, two sets of latent factors are defined: the dynamic latent factors 
-    which characterize the linear temporal dynamics on a nonlinear manifold, and the manifold latent factors 
-    which describe this low-dimensional manifold that is embedded in the high-dimensional neural population activity space. 
-    These two separate sets of latent factors together enable all the above flexible inference properties 
+    DFINE is a novel neural network model of neural population activity with the ability to perform
+    flexible inference while modeling the nonlinear latent manifold structure and linear temporal dynamics.
+    To model neural population activity, two sets of latent factors are defined: the dynamic latent factors
+    which characterize the linear temporal dynamics on a nonlinear manifold, and the manifold latent factors
+    which describe this low-dimensional manifold that is embedded in the high-dimensional neural population activity space.
+    These two separate sets of latent factors together enable all the above flexible inference properties
     by allowing for Kalman filtering on the manifold while also capturing embedding nonlinearities.
     Here are some mathematical notations used in this repository:
     - y: The high dimensional neural population activity, (num_seq, num_steps, dim_y). It must be Gaussian distributed, e.g., Gaussian-smoothed firing rates, or LFP, ECoG, EEG
@@ -31,21 +31,21 @@ class DFINE(nn.Module):
 
 
     * Please note that DFINE can perform learning and inference both for continuous data or trial-based data or segmented continuous data. In the case of continuous data,
-    num_seq and batch_size can be set to 1, and we let the model be optimized from the long time-series (this is basically gradient descent and not batch-based gradient descent). 
+    num_seq and batch_size can be set to 1, and we let the model be optimized from the long time-series (this is basically gradient descent and not batch-based gradient descent).
     In case of trial-based data, we can just pass the 3D tensor as the shape (num_seq, num_steps, dim_y) suggests. In case of segmented continuous data,
-    num_seq can be the number of segments and DFINE provides both per-segment and concatenated inference at the end for the user's convenience. In the concatenated inference, 
+    num_seq can be the number of segments and DFINE provides both per-segment and concatenated inference at the end for the user's convenience. In the concatenated inference,
     the assumption is the concatenation of segments form a continuous time-series (single time-series with batch size of 1).
     '''
 
     def __init__(self, config):
         '''
-        Initializer for an DFINE object. Note that DFINE is a subclass of torch.nn.Module. 
+        Initializer for an DFINE object. Note that DFINE is a subclass of torch.nn.Module.
 
-        Parameters: 
+        Parameters:
         ------------
 
         - config: yacs.config.CfgNode, yacs config which contains all hyperparameters required to create the DFINE model
-                                       Please see config_dfine.py for the hyperparameters, their default values and definitions. 
+                                       Please see config_dfine.py for the hyperparameters, their default values and definitions.
         '''
 
         super(DFINE, self).__init__()
@@ -63,29 +63,29 @@ class DFINE(nn.Module):
         A, B, C, W_log_diag, R_log_diag, mu_0, Lambda_0 = self._init_ldm_parameters()
 
         # Initialize the LDM
-        self.ldm = LDM(dim_x=self.dim_x, dim_u=self.dim_u, dim_a=self.dim_a, 
-                       A=A, B=B, C=C, 
+        self.ldm = LDM(dim_x=self.dim_x, dim_u=self.dim_u, dim_a=self.dim_a,
+                       A=A, B=B, C=C,
                        W_log_diag=W_log_diag, R_log_diag=R_log_diag,
                        mu_0=mu_0, Lambda_0=Lambda_0,
                        is_W_trainable=self.config.model.is_W_trainable,
                        is_R_trainable=self.config.model.is_R_trainable)
 
         # Initialize encoder and decoder(s)
-        self.encoder = self._get_MLP(input_dim=self.dim_y, 
-                                     output_dim=self.dim_a, 
-                                     layer_list=self.config.model.hidden_layer_list, 
+        self.encoder = self._get_MLP(input_dim=self.dim_y,
+                                     output_dim=self.dim_a,
+                                     layer_list=self.config.model.hidden_layer_list,
                                      activation_str=self.config.model.activation)
 
-        self.decoder = self._get_MLP(input_dim=self.dim_a, 
-                                     output_dim=self.dim_y, 
-                                     layer_list=self.config.model.hidden_layer_list[::-1], 
+        self.decoder = self._get_MLP(input_dim=self.dim_a,
+                                     output_dim=self.dim_y,
+                                     layer_list=self.config.model.hidden_layer_list[::-1],
                                      activation_str=self.config.model.activation)
-        
+
         # If asked to train supervised model, get behavior mapper
         if self.config.model.supervise_behv:
-            self.mapper = self._get_MLP(input_dim=self.dim_a, 
-                                        output_dim=self.dim_behv, 
-                                        layer_list=self.config.model.hidden_layer_list_mapper, 
+            self.mapper = self._get_MLP(input_dim=self.dim_a,
+                                        output_dim=self.dim_behv,
+                                        layer_list=self.config.model.hidden_layer_list_mapper,
                                         activation_str=self.config.model.activation_mapper)
 
 
@@ -93,7 +93,7 @@ class DFINE(nn.Module):
         '''
         Sets the observation (y), manifold latent factor (a) and dynamic latent factor (x)
         (and behavior data dimension if supervised model is to be trained) dimensions,
-        as well as behavior reconstruction loss and regularization loss scales from config. 
+        as well as behavior reconstruction loss and regularization loss scales from config.
         '''
 
         # Set the dimensions
@@ -104,7 +104,7 @@ class DFINE(nn.Module):
 
         if self.config.model.supervise_behv:
             self.dim_behv = len(self.config.model.which_behv_dims)
-        
+
         # Set the loss scales for behavior component and for the regularization
         if self.config.model.supervise_behv:
             self.scale_behv_recons = self.config.loss.scale_behv_recons
@@ -122,14 +122,14 @@ class DFINE(nn.Module):
         - layer_list: list, List of number of neurons in each hidden layer
         - activation_str: str, Activation function's name, 'tanh' by default
 
-        Returns: 
+        Returns:
         ------------
         - mlp_network: an instance of MLP class with desired architecture
         '''
 
         activation_fn = get_activation_function(activation_str)
         kernel_initializer_fn = get_kernel_initializer_function(self.config.model.nn_kernel_initializer)
-    
+
         mlp_network = MLP(input_dim=input_dim,
                           output_dim=output_dim,
                           layer_list=layer_list,
@@ -152,48 +152,48 @@ class DFINE(nn.Module):
         - mu_0: torch.Tensor, shape: (self.dim_x, ), Dynamic latent factor prediction initial condition (x_{0|-1}) for Kalman filtering
         - Lambda_0: torch.Tensor, shape: (self.dim_x, self.dim_x), Dynamic latent factor estimate error covariance initial condition (P_{0|-1}) for Kalman filtering
 
-        * We learn the log-diagonal of matrix W and R to satisfy the PSD constraint for cov matrices. Diagnoal W and R are used for the stability of learning 
+        * We learn the log-diagonal of matrix W and R to satisfy the PSD constraint for cov matrices. Diagnoal W and R are used for the stability of learning
         similar to prior latent LDM works, see (Kao et al., Nature Communications, 2015) & (Abbaspourazad et al., IEEE TNSRE, 2019) for further info
         '''
 
         kernel_initializer_fn = get_kernel_initializer_function(self.config.model.ldm_kernel_initializer)
         A = kernel_initializer_fn(self.config.model.init_A_scale * torch.eye(self.dim_x, dtype=torch.float32))
         B = kernel_initializer_fn(self.config.model.init_B_scale * torch.eye(self.dim_x, self.dim_u, dtype=torch.float32))
-        C = kernel_initializer_fn(self.config.model.init_C_scale * torch.randn(self.dim_a, self.dim_x, dtype=torch.float32)) 
+        C = kernel_initializer_fn(self.config.model.init_C_scale * torch.randn(self.dim_a, self.dim_x, dtype=torch.float32))
 
         W_log_diag = torch.log(kernel_initializer_fn(torch.diag(self.config.model.init_W_scale * torch.eye(self.dim_x, dtype=torch.float32))))
         R_log_diag = torch.log(kernel_initializer_fn(torch.diag(self.config.model.init_R_scale * torch.eye(self.dim_a, dtype=torch.float32))))
-        
+
         mu_0 = kernel_initializer_fn(torch.zeros(self.dim_x, dtype=torch.float32))
         Lambda_0 = kernel_initializer_fn(self.config.model.init_cov * torch.eye(self.dim_x, dtype=torch.float32))
 
         return A, B, C, W_log_diag, R_log_diag, mu_0, Lambda_0
 
-    
+
     def step(self, x, u=None, noise=False):
         x_next, a_next = self.ldm.step(x, u, noise)
-        y_next = self.decoder(a_next)  
+        y_next = self.decoder(a_next)
         return x_next, a_next, y_next
-           
+
 
     def forward(self, y, u=None, mask=None):
         '''
         Forward pass for DFINE Model
 
-        Parameters: 
+        Parameters:
         ------------
         - y: torch.Tensor, shape: (num_seq, num_steps, dim_y), High-dimensional neural observations
         - u: torch.Tensor, shape: (num_seq, num_steps, dim_u), Control input vectors
-        - mask: torch.Tensor, shape: (num_seq, num_steps, 1), 
+        - mask: torch.Tensor, shape: (num_seq, num_steps, 1),
             Mask input which shows whether observations at each timestep exist (1) or are missing (0)
 
-        Returns: 
+        Returns:
         ------------
-        - model_vars: dict, Dictionary which contains learned parameters, inferrred latents, predictions and reconstructions. Keys are: 
-            - a_hat: torch.Tensor, shape: (num_seq, num_steps, dim_a), Batch of projected manifold latent factors. 
+        - model_vars: dict, Dictionary which contains learned parameters, inferrred latents, predictions and reconstructions. Keys are:
+            - a_hat: torch.Tensor, shape: (num_seq, num_steps, dim_a), Batch of projected manifold latent factors.
             - a_pred: torch.Tensor, shape: (num_seq, num_steps-1, dim_a), Batch of predicted estimates of manifold latent factors (last index of the second dimension is removed)
-            - a_filter: torch.Tensor, shape: (num_seq, num_steps, dim_a), Batch of filtered estimates of manifold latent factors 
-            - a_smooth: torch.Tensor, shape: (num_seq, num_steps, dim_a), Batch of smoothed estimates of manifold latent factors 
+            - a_filter: torch.Tensor, shape: (num_seq, num_steps, dim_a), Batch of filtered estimates of manifold latent factors
+            - a_smooth: torch.Tensor, shape: (num_seq, num_steps, dim_a), Batch of smoothed estimates of manifold latent factors
             - x_pred: torch.Tensor, shape: (num_seq, num_steps-1, dim_x), Batch of predicted estimates of dynamic latent factors
             - x_filter: torch.Tensor, shape: (num_seq, num_steps, dim_x), Batch of filtered estimates of dynamic latent factors
             - x_smooth: torch.Tensor, shape: (num_seq, num_steps, dim_x), Batch of smoothed estimates of dynamic latent factors
@@ -209,7 +209,7 @@ class DFINE(nn.Module):
             - behv_hat: torch.Tensor, shape: (num_seq, num_steps, dim_behv), Batch of reconstructed behavior. None if unsupervised model is trained
 
         * Terminology definition:
-            projected: noisy estimations of manifold latent factors after nonlinear manifold embedding via encoder 
+            projected: noisy estimations of manifold latent factors after nonlinear manifold embedding via encoder
             predicted: one-step ahead predicted estimations (t+1|t), the first and last time indices are (1|0) and (T|T-1)
             filtered: causal estimations (t|t)
             smoothed: non-causal estimations (t|T)
@@ -236,7 +236,7 @@ class DFINE(nn.Module):
         a_pred = (C @ x_pred.unsqueeze(dim=-1)).squeeze(dim=-1) #  (num_seq, num_steps, dim_a, dim_x) x (num_seq, num_steps, dim_x, 1) --> (num_seq, num_steps, dim_a)
         a_filter = (C @ x_filter.unsqueeze(dim=-1)).squeeze(dim=-1) #  (num_seq, num_steps, dim_a, dim_x) x (num_seq, num_steps, dim_x, 1) --> (num_seq, num_steps, dim_a)
         a_smooth = (C @ x_smooth.unsqueeze(dim=-1)).squeeze(dim=-1) #  (num_seq, num_steps, dim_a, dim_x) x (num_seq, num_steps, dim_x, 1) --> (num_seq, num_steps, dim_a)
-        
+
         # Remove the last timestep of predictions since it's T+1|T, which is not of interest to us
         x_pred = x_pred[:, :-1, :]
         Lambda_pred = Lambda_pred[:, :-1, :, :]
@@ -252,8 +252,8 @@ class DFINE(nn.Module):
         else:
             behv_hat = None
 
-        # Get filtered and smoothed estimates of neural observations. To perform k-step-ahead prediction, 
-        # get_k_step_ahead_prediction(...) function should be called after the forward pass. 
+        # Get filtered and smoothed estimates of neural observations. To perform k-step-ahead prediction,
+        # get_k_step_ahead_prediction(...) function should be called after the forward pass.
         y_hat = self.decoder(a_hat.view(-1, self.dim_a))
         y_pred = self.decoder(a_pred.reshape(-1, self.dim_a))
         y_filter = self.decoder(a_filter.view(-1, self.dim_a))
@@ -265,35 +265,35 @@ class DFINE(nn.Module):
         y_smooth = y_smooth.view(num_seq, -1, self.dim_y)
 
         # Dump inferrred latents, predictions and reconstructions to a dictionary
-        model_vars = dict(a_hat=a_hat, a_pred=a_pred, a_filter=a_filter, a_smooth=a_smooth, 
+        model_vars = dict(a_hat=a_hat, a_pred=a_pred, a_filter=a_filter, a_smooth=a_smooth,
                           x_pred=x_pred, x_filter=x_filter, x_smooth=x_smooth,
                           Lambda_pred=Lambda_pred, Lambda_filter=Lambda_filter, Lambda_smooth=Lambda_smooth,
-                          y_hat=y_hat, y_pred=y_pred, y_filter=y_filter, y_smooth=y_smooth, 
+                          y_hat=y_hat, y_pred=y_pred, y_filter=y_filter, y_smooth=y_smooth,
                           A=A, B=B, C=C, behv_hat=behv_hat)
         return model_vars
 
 
     def get_k_step_ahead_prediction(self, model_vars, k, u=None):
         '''
-        Performs k-step ahead prediction of manifold latent factors, dynamic latent factors and neural observations. 
+        Performs k-step ahead prediction of manifold latent factors, dynamic latent factors and neural observations.
 
-        Parameters: 
+        Parameters:
         ------------
-        - model_vars: dict, Dictionary returned after forward(...) call. See the definition of forward(...) function for information. 
+        - model_vars: dict, Dictionary returned after forward(...) call. See the definition of forward(...) function for information.
             - x_filter: torch.Tensor, shape: (num_seq, num_steps, dim_x), Batch of filtered estimates of dynamic latent factors
             - A: torch.Tensor, shape: (num_seq, num_steps, dim_x, dim_x) or (dim_x, dim_x), State transition matrix of LDM
             - B: torch.Tensor, shape: (num_seq, num_steps, dim_x, dim_u) or (dim_x, dim_u), Control-input matrix of LDM
             - C: torch.Tensor, shape: (num_seq, num_steps, dim_y, dim_x) or (dim_y, dim_x), Observation matrix of LDM
         - k: int, Number of steps ahead for prediction
 
-        Returns: 
+        Returns:
         ------------
-        - y_pred_k: torch.Tensor, shape: (num_seq, num_steps-k, dim_y), Batch of predicted estimates of neural observations, 
+        - y_pred_k: torch.Tensor, shape: (num_seq, num_steps-k, dim_y), Batch of predicted estimates of neural observations,
                                                                            the first index of the second dimension is y_{k|0}
-        - a_pred_k: torch.Tensor, shape: (num_seq, num_steps-k, dim_a), Batch of predicted estimates of manifold latent factor, 
-                                                                        the first index of the second dimension is a_{k|0}                                                              
-        - x_pred_k: torch.Tensor, shape: (num_seq, num_steps-k, dim_x), Batch of predicted estimates of dynamic latent factor, 
-                                                                        the first index of the second dimension is x_{k|0}  
+        - a_pred_k: torch.Tensor, shape: (num_seq, num_steps-k, dim_a), Batch of predicted estimates of manifold latent factor,
+                                                                        the first index of the second dimension is a_{k|0}
+        - x_pred_k: torch.Tensor, shape: (num_seq, num_steps-k, dim_x), Batch of predicted estimates of dynamic latent factor,
+                                                                        the first index of the second dimension is x_{k|0}
         '''
 
         # Check whether provided k value is valid or not
@@ -307,12 +307,12 @@ class DFINE(nn.Module):
 
         # Get the required dimensions
         num_seq, num_steps, _ = x_filter.shape
-        
+
         # If control input is None, default to zeroes
         if u is None:
             u = torch.zeros(num_seq, num_steps, self.dim_u, dtype=torch.float32)
 
-        # Check if shapes of A, B, and C are 4D where first 2 dimensions are (number of trials/time segments) and (number of steps)       
+        # Check if shapes of A, B, and C are 4D where first 2 dimensions are (number of trials/time segments) and (number of steps)
         if len(A.shape) == 2:
             A = A.repeat(num_seq, num_steps, 1, 1)
         if len(B.shape) == 2:
@@ -322,9 +322,9 @@ class DFINE(nn.Module):
 
         # Here is where k-step ahead prediction is iteratively performed
         x_pred_k = x_filter[:, :-k, ...] # [x_{k|0}, x_{(k+1)|1}, ..., x_{T|(T-k)}]
-        for i in range(1, k+1):
+        for i in range(0, k):
             if i != k:
-                x_pred_k = (A[:, i:-(k-i), ...] @ x_pred_k.unsqueeze(dim=-1) + B[:, i:-(k-i), ...] @ u[:, i:-(k-i), ...].unsqueeze(dim=-1)).squeeze(dim=-1)  
+                x_pred_k = (A[:, i:-(k-i), ...] @ x_pred_k.unsqueeze(dim=-1) + B[:, i:-(k-i), ...] @ u[:, i:-(k-i), ...].unsqueeze(dim=-1)).squeeze(dim=-1)
             else:
                 x_pred_k = (A[:, i:,       ...] @ x_pred_k.unsqueeze(dim=-1) + B[:, i:,       ...] @ u[:, i:,       ...].unsqueeze(dim=-1)).squeeze(dim=-1)
         a_pred_k = (C[:, k:, ...] @ x_pred_k.unsqueeze(dim=-1)).squeeze(dim=-1)
@@ -337,26 +337,26 @@ class DFINE(nn.Module):
 
         return y_pred_k, a_pred_k, x_pred_k
 
-    
+
     def compute_loss(self, y, model_vars, u=None, mask=None, behv=None):
         '''
         Computes k-step ahead predicted MSE loss, regularization loss and behavior reconstruction loss
-        if supervised model is being trained. 
+        if supervised model is being trained.
 
-        Parameters: 
+        Parameters:
         ------------
         - y: torch.Tensor, shape: (num_seq, num_steps, dim_y), Batch of high-dimensional neural observations
-        - mask: torch.Tensor, shape: (num_seq, num_steps, 1), Mask input which shows whether 
+        - mask: torch.Tensor, shape: (num_seq, num_steps, 1), Mask input which shows whether
                                                               observations at each timestep exists (1) or are missing (0)
                                                               if None it will be set to ones.
-        - model_vars: dict, Dictionary returned after forward(...) call. See the definition of forward(...) function for information. 
+        - model_vars: dict, Dictionary returned after forward(...) call. See the definition of forward(...) function for information.
         - behv: torch.tensor, shape: (num_seq, num_steps, dim_behv), Batch of behavior data
 
-        Returns: 
+        Returns:
         ------------
-        - loss: torch.Tensor, shape: (), Loss to optimize, which is sum of k-step-ahead MSE loss, L2 regularization loss and 
+        - loss: torch.Tensor, shape: (), Loss to optimize, which is sum of k-step-ahead MSE loss, L2 regularization loss and
                                          behavior reconstruction loss if model is supervised
-        - loss_dict: dict, Dictionary which has all loss components to log on Tensorboard. Keys are (e.g. for config.loss.steps_ahead = [1, 2]): 
+        - loss_dict: dict, Dictionary which has all loss components to log on Tensorboard. Keys are (e.g. for config.loss.steps_ahead = [1, 2]):
             - steps_{k}_mse: torch.Tensor, shape: (), {k}-step ahead predicted masked MSE, k's are determined by config.loss.steps_ahead
             - model_loss: torch.Tensor, shape: (), Negative of sum of all steps_{k}_mse
             - behv_loss: torch.Tensor, shape: (), Behavior reconstruction loss, 0 if model is unsupervised
@@ -370,12 +370,12 @@ class DFINE(nn.Module):
 
         # Dump individual loss values for logging or Tensorboard
         loss_dict = dict()
-        
+
         # Iterate over multiple steps ahead
-        k_steps_mse_sum = 0  
-        for _, k in enumerate(self.config.loss.steps_ahead):
+        k_steps_mse_sum = 0
+        for _, k in enumerate(self.config.loss.steps_ahead): #TODO this can be made O(k) faster by reusing previous k's computation
             y_pred_k, _, _ = self.get_k_step_ahead_prediction(model_vars, k=k, u=u)
-            mse_pred = compute_mse(y_flat=y[:, k:, :].reshape(-1, self.dim_y), 
+            mse_pred = compute_mse(y_flat=y[:, k:, :].reshape(-1, self.dim_y),
                                    y_hat_flat=y_pred_k.reshape(-1, self.dim_y),
                                    mask_flat=mask[:, k:, :].reshape(-1,))
             k_steps_mse_sum += mse_pred
@@ -386,7 +386,7 @@ class DFINE(nn.Module):
 
         # Get MSE loss for behavior reconstruction, 0 if we dont supervise our model with behavior data
         if self.config.model.supervise_behv:
-            behv_mse = compute_mse(y_flat=behv[..., self.config.model.which_behv_dims].reshape(-1, self.dim_behv), 
+            behv_mse = compute_mse(y_flat=behv[..., self.config.model.which_behv_dims].reshape(-1, self.dim_behv),
                                    y_hat_flat=model_vars['behv_hat'].reshape(-1, self.dim_behv),
                                    mask_flat=mask.reshape(-1,))
             behv_loss = self.scale_behv_recons * behv_mse
@@ -396,7 +396,7 @@ class DFINE(nn.Module):
         loss_dict['behv_mse'] = behv_mse
         loss_dict['behv_loss'] = behv_loss
 
-        # L2 regularization loss 
+        # L2 regularization loss
         reg_loss = 0
         for name, param in self.named_parameters():
             if 'weight' in name:
@@ -407,12 +407,3 @@ class DFINE(nn.Module):
         loss = model_loss + behv_loss + reg_loss
         loss_dict['total_loss'] = loss
         return loss, loss_dict
-
-        
-
-
-                    
- 
-        
-        
-
