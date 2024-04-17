@@ -70,7 +70,9 @@ elif train_input['type'] == 'binary_noise':
 else:
     raise ValueError(f'Invalid train_input type: {train_input["type"]}')
 
-x0 = torch.rand(num_seqs, dim_x, dtype=torch.float32)*20-10
+xmin = -10
+xmax = 10
+x0 = torch.rand(num_seqs, dim_x, dtype=torch.float32)*(xmax-xmin) + xmin
 x,a,y = ssm.generate_trajectory(x0=x0, u_seq=u, num_seqs=num_seqs)
 # y, y_mean, y_std = z_score_tensor(y)
 
@@ -91,9 +93,9 @@ for i in range(10):
 
 #%% Train DFINE
 use_ground_truth = False
-# load_model = False
-#load_model = "/Users/dtyulman/Drive/dfine_ctrl/torchDFINE/results/train_logs/2024-03-15/154837_u={'type': 'binary_noise', 'lo': -0.5, 'hi': 0.5}"
-load_model = '/Users/dtyulman/Drive/dfine_ctrl/torchDFINE/results/train_logs/2024-04-11/164847_u=binary_noise_-0.5_0.5'
+load_model = False
+# load_model = "/Users/dtyulman/Drive/dfine_ctrl/torchDFINE/results/train_logs/2024-03-15/154837_u={'type': 'binary_noise', 'lo': -0.5, 'hi': 0.5}"
+# load_model = '/Users/dtyulman/Drive/dfine_ctrl/torchDFINE/results/train_logs/2024-04-11/164847_u=binary_noise_-0.5_0.5'
 
 config = get_default_config()
 config.model.dim_x = dim_x
@@ -232,7 +234,7 @@ fig, ax = controller.plot_all(**outputs)
 # fig.tight_layout()
 
 cmap = plt.cm.get_cmap('Reds')
-cmap.set_over('black')
+cmap.set_over('grey')
 vmax = defaultdict(lambda: None)
 vmax.update({'x': 5, 'a': 5, 'y': 10})
 

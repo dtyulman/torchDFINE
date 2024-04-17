@@ -70,16 +70,26 @@ class DFINE(nn.Module):
                        is_W_trainable=self.config.model.is_W_trainable,
                        is_R_trainable=self.config.model.is_R_trainable)
 
-        # Initialize encoder and decoder(s)
-        self.encoder = self._get_MLP(input_dim=self.dim_y,
-                                     output_dim=self.dim_a,
-                                     layer_list=self.config.model.hidden_layer_list,
-                                     activation_str=self.config.model.activation)
 
-        self.decoder = self._get_MLP(input_dim=self.dim_a,
-                                     output_dim=self.dim_y,
-                                     layer_list=self.config.model.hidden_layer_list[::-1],
-                                     activation_str=self.config.model.activation)
+        # Initialize encoder and decoder(s)
+        if self.config.model.no_manifold:
+            # Make these a passthrough, thus setting the manifold latent to be equal to the observation
+            # and reducing the model to a simple LDM
+            assert self.dim_y == self.dim_a, 'Manifold latent and observation dimensions must be equal if not using autoencoder'
+            assert self.config.model.hidden_layer_list is None, 'Do not provide hidden_layer_list if not using autoencoder'
+            assert self.config.model.activation is None, 'Do not provide activation if not using autoencoder'
+            self.encoder = self.decoder = lambda x: x
+        else:
+            # Initialize the autoencoder
+            self.encoder = self._get_MLP(input_dim=self.dim_y,
+                                         output_dim=self.dim_a,
+                                         layer_list=self.config.model.hidden_layer_list,
+                                         activation_str=self.config.model.activation)
+
+            self.decoder = self._get_MLP(input_dim=self.dim_a,
+                                         output_dim=self.dim_y,
+                                         layer_list=self.config.model.hidden_layer_list[::-1],
+                                         activation_str=self.config.model.activation)
 
         # If asked to train supervised model, get behavior mapper
         if self.config.model.supervise_behv:
