@@ -407,7 +407,7 @@ class DFINE(nn.Module):
         loss_dict['behv_loss'] = behv_loss
 
         # L2 regularization loss
-        reg_loss = 0
+        reg_loss = torch.tensor(0.)
         for name, param in self.named_parameters():
             if 'weight' in name:
                 reg_loss = reg_loss + self.scale_l2 * torch.norm(param)

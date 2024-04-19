@@ -41,7 +41,7 @@ class LQGController():
     def estimate_latents(self, y):
         """Get start and target points in model's latent space"""
         a_hat = self.model.encoder(y.unsqueeze(0)).squeeze()
-        x_hat = torch.linalg.solve(self.model.ldm.C, a_hat) #x = Cinv @ a #TODO: is C generally invertible?
+        x_hat = self.model.ldm(a=a_hat.view(1,1,-1),u=None)[1].squeeze() # index 1 has mu_t_all (we need x_{0|0}), it has to be squeezed so that it is compatible with the other functions
         return x_hat, a_hat
 
 
