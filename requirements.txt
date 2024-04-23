@@ -9,3 +9,4 @@ tqdm==4.62.3
 yacs==0.1.8
 tensorboard
 scikit-learn # for the tutorial
+PSID

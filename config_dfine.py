@@ -28,7 +28,7 @@ _config.model.activation = None if _config.model.no_manifold else 'tanh' # Activ
 _config.model.dim_y = 30 # Dimensionality of neural observations
 _config.model.dim_a = _config.model.dim_y if _config.model.no_manifold else 16 # Dimensionality of manifold latent factor, a choice higher than dim_y (above) may lead to overfitting
 _config.model.dim_x = 16 # Dimensionality of dynamic latent factor, it's recommended to set it same as dim_a (above), please see Extended Data Fig. 8
-_config.model.dim_u = 16 # Dimensionality of control input
+_config.model.dim_u = 1 # Dimensionality of control input
 _config.model.init_A_scale = 1 # Initialization scale of LDM state transition matrix
 _config.model.init_B_scale = 1 # Initialization scale of LDM control-input matrix
 _config.model.init_C_scale = 1 # Initialization scale of LDM observation matrix
@@ -52,7 +52,7 @@ _config.loss = CN()
 _config.loss.scale_l2 = 2e-3 # L2 regularization loss scale (we recommend a grid-search for the best value, i.e., a grid of [1e-4, 5e-4, 1e-3, 2e-3]). Please use 0 for nonlinear manifold simulations as it leads to a better performance.
 _config.loss.steps_ahead = [1,2,3,4] # List of number of steps ahead for which DFINE is optimized. For unsupervised and supervised versions, default values are [1,2,3,4] and [1,2], respectively.
 _config.loss.scale_behv_recons = 20 # If _config.model.supervise_behv is True, scale for MSE of behavior reconstruction (We recommend a grid-search for the best value. It should be set to a large value).
-
+_config.loss.scale_forward_pred = 1 # Loss scale for forward prediction loss (output is predicted solely from the input)
 ## training
 _config.train = CN()
 _config.train.batch_size = 32 # Batch size

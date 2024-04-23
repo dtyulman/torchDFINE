@@ -119,7 +119,7 @@ class DFINE(nn.Module):
         if self.config.model.supervise_behv:
             self.scale_behv_recons = self.config.loss.scale_behv_recons
         self.scale_l2 = self.config.loss.scale_l2
-
+        self.scale_forward_pred = self.config.loss.scale_forward_pred
 
     def _get_MLP(self, input_dim, output_dim, layer_list, activation_str='tanh'):
         '''
@@ -347,6 +347,19 @@ class DFINE(nn.Module):
 
         return y_pred_k, a_pred_k, x_pred_k
 
+    def get_forward_prediction(self, u):
+        num_seq, num_steps, _ = u.shape
+        _, x_forward_pred, _, _ = self.ldm.compute_forward_prediction(u=u)
+        a_forward_pred = (self.ldm.C @ x_forward_pred.unsqueeze(dim=-1)).squeeze(dim=-1)
+
+        # After obtaining k-step ahead predicted manifold latent factors, they're decoded forward predicted neural observations
+        y_forward_pred = self.decoder(a_forward_pred.view(-1, self.dim_a))
+
+        # Reshape mean and variance back to 3D structure after decoder (num_seq, num_steps, dim_y)
+        y_forward_pred = y_forward_pred.reshape(num_seq, -1, self.dim_y)
+
+        return y_forward_pred
+
 
     def compute_loss(self, y, model_vars, u=None, mask=None, behv=None):
         '''
@@ -413,7 +426,18 @@ class DFINE(nn.Module):
                 reg_loss = reg_loss + self.scale_l2 * torch.norm(param)
         loss_dict['reg_loss'] = reg_loss
 
+        # Forward prediction loss
+        forward_pred_loss = torch.tensor(0.)
+        if self.scale_forward_pred > 0:
+            y_forward_pred = self.get_forward_prediction(u=u)
+            mse_forward_pred = compute_mse(y_flat=y.reshape(-1, self.dim_y),
+                                   y_hat_flat=y_forward_pred.reshape(-1, self.dim_y),
+                                   mask_flat=mask.reshape(-1,))
+            
+            forward_pred_loss = self.scale_forward_pred * mse_forward_pred            
+            loss_dict['forward_pred_loss'] = forward_pred_loss
+
         # Final loss is summation of model loss (sum of k-step ahead MSEs), behavior reconstruction loss and L2 regularization loss
-        loss = model_loss + behv_loss + reg_loss
+        loss = model_loss + behv_loss + reg_loss + forward_pred_loss
         loss_dict['total_loss'] = loss
         return loss, loss_dict
