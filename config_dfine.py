@@ -52,7 +52,7 @@ _config.loss = CN()
 _config.loss.scale_l2 = 2e-3 # L2 regularization loss scale (we recommend a grid-search for the best value, i.e., a grid of [1e-4, 5e-4, 1e-3, 2e-3]). Please use 0 for nonlinear manifold simulations as it leads to a better performance.
 _config.loss.steps_ahead = [1,2,3,4] # List of number of steps ahead for which DFINE is optimized. For unsupervised and supervised versions, default values are [1,2,3,4] and [1,2], respectively.
 _config.loss.scale_behv_recons = 20 # If _config.model.supervise_behv is True, scale for MSE of behavior reconstruction (We recommend a grid-search for the best value. It should be set to a large value).
-_config.loss.scale_forward_pred = 1 # Loss scale for forward prediction loss (output is predicted solely from the input)
+_config.loss.scale_forward_pred = 0 # Loss scale for forward prediction loss (output is predicted solely from the input)
 ## training
 _config.train = CN()
 _config.train.batch_size = 32 # Batch size
