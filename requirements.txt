@@ -6,6 +6,7 @@ scipy==1.5.4
 torch==1.11.0+cu113
 torchmetrics==0.8.0
 tqdm==4.62.3
-yacs==0.1.6
+yacs==0.1.8
 tensorboard
 scikit-learn # for the tutorial
+PSID

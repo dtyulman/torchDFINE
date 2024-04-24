@@ -110,6 +110,7 @@ class TrainerDFINE(BaseTrainer):
             metric_names.append('behv_loss')
         metric_names.append('model_loss')
         metric_names.append('reg_loss')
+        metric_names.append('forward_pred_loss')
         metric_names.append('total_loss')
 
         metrics = {}
@@ -153,6 +154,9 @@ class TrainerDFINE(BaseTrainer):
         if self.config.model.supervise_behv:
             log_str += f"behv_loss: {self.metrics[train_valid]['behv_loss'].compute():.5f}, scale_behv_recons: {self.dfine.scale_behv_recons:.5f}\n"
 
+        # Logging forward prediction loss and its scale
+        log_str += f"forward_pred_loss: {self.metrics[train_valid]['forward_pred_loss'].compute():.5f}, scale_forward_pred: {self.dfine.scale_forward_pred:.5f}\n"
+        
         # Finally, log model_loss and total_loss to optimize
         log_str += f"model_loss: {self.metrics[train_valid]['model_loss'].compute():.5f}, total_loss: {self.metrics[train_valid]['total_loss'].compute():.5f}\n"
         return log_str

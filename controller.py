@@ -59,13 +59,12 @@ class LQGController():
             #TODO: how to guarantee that this point in latent space actually corresponds to the desired target y_ss?
             _, _, C = self.get_model_matrices()
             a_hat = self.model.encoder(y.unsqueeze(0)).squeeze()
-            x_hat = torch.linalg.solve(C, a_hat) #x = Cinv @ a #TODO: what if C not invertible?
+            x_hat = self.model.ldm(a=a_hat.view(1,1,-1),u=None)[1].squeeze() # index 1 has mu_t_all (we need x_{0|0}), it has to be squeezed so that it is compatible with the other functions
         elif isinstance(self.model, NonlinearStateSpaceModel):
             #TODO invert SSM's nonlinearity
             raise NotImplementedError()
         else:
             raise ValueError('Invalid model')
-
         return x_hat, a_hat
 
 
