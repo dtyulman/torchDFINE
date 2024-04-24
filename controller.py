@@ -18,6 +18,21 @@ class LQGController():
         self.plant = plant
 
 
+    def get_model_matrices(self):
+        if isinstance(self.model, DFINE):
+            A = self.model.ldm.A
+            B = self.model.ldm.B
+            C = self.model.ldm.C
+        elif isinstance(self.model, NonlinearStateSpaceModel):
+            A = self.model.A_fn.A
+            B = self.model.B
+            C = self.model.C
+        else:
+            raise ValueError('Invalid model')
+
+        return A, B, C
+
+
     def generate_observation(self, x=None, a=None):
         assert (x is None) != (a is None), 'Must specify exactly one of `x` or `a` for target'
 
@@ -40,8 +55,17 @@ class LQGController():
 
     def estimate_latents(self, y):
         """Get start and target points in model's latent space"""
-        a_hat = self.model.encoder(y.unsqueeze(0)).squeeze()
-        x_hat = torch.linalg.solve(self.model.ldm.C, a_hat) #x = Cinv @ a #TODO: is C generally invertible?
+        if isinstance(self.model, DFINE):
+            #TODO: how to guarantee that this point in latent space actually corresponds to the desired target y_ss?
+            _, _, C = self.get_model_matrices()
+            a_hat = self.model.encoder(y.unsqueeze(0)).squeeze()
+            x_hat = torch.linalg.solve(C, a_hat) #x = Cinv @ a #TODO: what if C not invertible?
+        elif isinstance(self.model, NonlinearStateSpaceModel):
+            #TODO invert SSM's nonlinearity
+            raise NotImplementedError()
+        else:
+            raise ValueError('Invalid model')
+
         return x_hat, a_hat
 
 
@@ -50,15 +74,11 @@ class LQGController():
         Compute infinite-horizon LQR feedback gain matrix G
         Cost function: J = \sum_t x^T Q x + u^T R u
         """
-        A = self.model.ldm.A
-        B = self.model.ldm.B
-        C = self.model.ldm.C
+        A, B, C = self.get_model_matrices()
 
         #effectively puts the penalty on a(t) with Q=I because a(t)=C*x(t)
         #need to do sqrt trick to ensure Q_lqr is symmetric due to numerical error
         Q_lqr = (math.sqrt(Q_scale)*C.T) @ (math.sqrt(Q_scale)*C)
-        if (Q_lqr != Q_lqr.T).any():
-            pass
         R_lqr = R_scale * torch.eye(self.model.dim_u)
 
         _, _, G = control.dare(A, B, Q_lqr, R_lqr) #TODO: should be computed for entire sequence A_t, B_t
@@ -68,23 +88,26 @@ class LQGController():
 
     def compute_steady_state_control(self, x_hat_ss):
         """Compute steady-state control input"""
-        A = self.model.ldm.A
-        B = self.model.ldm.B
+        A, B, _ = self.get_model_matrices()
         I = torch.eye(self.model.dim_x)
         u_ss = torch.linalg.pinv(B) @ (I-A) @ x_hat_ss
         return u_ss
 
 
     @torch.no_grad()
-    def run_control(self, y_ss, x0=None, a0=None, Q=1, R=1, num_steps=100, t_ctrl_start=None, t_ctrl_stop=None):
+    def run_control(self, y_ss, x0=None, a0=None, Q=1, R=1, umin=None, umax=None, num_steps=100, t_ctrl_start=None, t_ctrl_stop=None):
+        # Set defaults
         if t_ctrl_start is None:
             t_ctrl_start = -1
         if t_ctrl_stop is None:
             t_ctrl_stop = float('inf')
 
+        if umin is not None and umax is not None:
+            assert umin < umax
+
         # Compute control constants
         G = self.compute_lqr_gain(Q, R)
-        x_hat_ss, a_hat_ss = self.estimate_latents(y_ss) #TODO: how to guarantee that this point in latent space actually corresponds to the desired target y_ss?
+        x_hat_ss, a_hat_ss = self.estimate_latents(y_ss)
         u_ss = self.compute_steady_state_control(x_hat_ss)
 
         # Logging
@@ -108,6 +131,10 @@ class LQGController():
             else:
                 u[:,t,:] = 0
 
+            # Optional hard bounds on control inputs
+            if umin is not None or umax is not None:
+                u[:,t,:] = torch.clip(u[:,t,:], min=umin, max=umax)
+
             # Step dynamics of plant with control input
             x[:,t+1,:], a[:,t+1,:], y[:,t+1,:] = self.plant.step(x[:,t,:].squeeze(), u[:,t,:].squeeze())
 
@@ -126,7 +153,8 @@ class LQGController():
                 'Q':Q, 'R':R}
 
 
-    def plot_all(self, x, a, y, u,
+    @staticmethod
+    def plot_all(x, a, y, u,
                  x_ss, a_ss, y_ss, u_ss,
                  x_hat, a_hat,
                  x_hat_ss, a_hat_ss,
