@@ -34,6 +34,7 @@ class LDM(nn.Module):
         - A: torch.Tensor, shape: (self.dim_x, self.dim_x), State transition matrix of LDM, default identity
         - B: torch.Tensor, shape: (num_seq, num_steps, dim_x, dim_u) or (dim_x, dim_u), Control-input matrix of LDM, default identity
         - C: torch.Tensor, shape: (self.dim_a, self.dim_x), Observation matrix of LDM, default identity
+        - D: torch.Tensor, shape: (self.dim_a, self.dim_u), Feed-through matrix of LDM, default identity (it is learned only if fit_D_matrix flag is True)
         - mu_0: torch.Tensor, shape: (self.dim_x, ), Dynamic latent factor estimate initial condition (x_{0|-1}) for Kalman filtering, default zeros 
         - Lambda_0: torch.Tensor, shape: (self.dim_x, self.dim_x), Dynamic latent factor estimate error covariance initial condition (P_{0|-1}) for Kalman Filtering, default identity
         - W_log_diag: torch.Tensor, shape: (self.dim_x, ), Log-diagonal of process noise covariance matrix (W, therefore it is diagonal and PSD), default ones
@@ -48,11 +49,17 @@ class LDM(nn.Module):
 
         self.is_W_trainable = kwargs.pop('is_W_trainable', True)
         self.is_R_trainable = kwargs.pop('is_R_trainable', True)
+        self.fit_D_matrix = kwargs.pop('fit_D_matrix',False)
 
         # Get initial values for LDM parameters
         self.A = kwargs.pop('A', torch.eye(self.dim_x, self.dim_x, dtype=torch.float32).unsqueeze(dim=0)).type(torch.FloatTensor)
         self.B = kwargs.pop('B', torch.eye(self.dim_x, self.dim_u, dtype=torch.float32).unsqueeze(dim=0)).type(torch.FloatTensor)
         self.C = kwargs.pop('C', torch.eye(self.dim_a, self.dim_x, dtype=torch.float32).unsqueeze(dim=0)).type(torch.FloatTensor)
+        # If fit_D_matrix flag is false, D will be initially set to zero and also will not be updated with gradient descent
+        if self.fit_D_matrix:
+            self.D = kwargs.pop('D', torch.eye(self.dim_a, self.dim_u, dtype=torch.float32)).type(torch.FloatTensor)
+        else:
+            self.D = torch.zeros(self.dim_a, self.dim_u, dtype=torch.float32).type(torch.FloatTensor)
         
         # Get KF initial conditions
         self.mu_0 = kwargs.pop('mu_0', torch.zeros(self.dim_x, dtype=torch.float32)).type(torch.FloatTensor)
@@ -74,10 +81,13 @@ class LDM(nn.Module):
         # Check if LDM matrix shapes are consistent
         self._check_matrix_shapes()
 
-        # Register LDM parameters
+        # Register LDM parameters   
         self.A = torch.nn.Parameter(self.A, requires_grad=True)
         self.B = torch.nn.Parameter(self.B, requires_grad=True)
         self.C = torch.nn.Parameter(self.C, requires_grad=True)
+
+        if self.fit_D_matrix:
+            self.D = torch.nn.Parameter(self.D, requires_grad=self.fit_D_matrix)
         
         self.W_log_diag = torch.nn.Parameter(self.W_log_diag, requires_grad=self.is_W_trainable)
         self.R_log_diag = torch.nn.Parameter(self.R_log_diag, requires_grad=self.is_R_trainable)  
@@ -95,6 +105,7 @@ class LDM(nn.Module):
         assert self.A.shape == (self.dim_x, self.dim_x), 'Shape of A matrix must be (dim_x, dim_x)!'
         assert self.B.shape == (self.dim_x, self.dim_u), 'Shape of B matrix must be (dim_x, dim_u)!'
         assert self.C.shape == (self.dim_a, self.dim_x), 'Shape of C matrix must be (dim_a, dim_x)!'
+        assert self.D.shape == (self.dim_a, self.dim_u), 'Shape of D matrix must be (dim_a, dim_u)!'
         
         # Check mu_0 matrix's shape
         if len(self.mu_0.shape) != 1:
@@ -142,6 +153,8 @@ class LDM(nn.Module):
             
         # Generate manifold latent
         a_next = self.C @ x_next.squeeze()
+        if (u is not None) and self.fit_D_matrix:
+            a_next += self.D @ u 
         if noise:
             a_next += MultivariateNormal(torch.zeros(self.dim_a), R).sample()
             
@@ -216,6 +229,11 @@ class LDM(nn.Module):
             # Obtain residual
             a_pred = (C_t @ mu_pred.unsqueeze(dim=-1)).squeeze(dim=-1) # (num_seq, dim_a)
             r = a_masked[:, t, ...] - a_pred # (num_seq, dim_a)
+            
+            if self.fit_D_matrix:
+                # Tile D matrix for each time segment
+                D_t = self.D.repeat(num_seq, 1, 1)
+                r -= (D_t @ u[:,t,...].unsqueeze(dim=-1)).squeeze(dim=-1) # (num_seq, dim_a)
 
             # Project system uncertainty into measurement space, get Kalman Gain
             S = C_t @ Lambda_pred @ torch.permute(C_t, (0, 2, 1)) + R # (num_seq, dim_a, dim_a)

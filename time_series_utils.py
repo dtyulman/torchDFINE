@@ -8,6 +8,7 @@ Shanechi Lab, University of Southern California
 from python_utils import convert_to_tensor
 import torch
 from scipy.stats import pearsonr
+from nn import compute_mse
 
 
 def get_nrmse_error(y, y_hat, version_calculation='modified'):
@@ -162,3 +163,14 @@ def z_score_tensor(y, fit=True, **kwargs):
         y_z_scored = y_resh.reshape(y.shape)
         return y_z_scored, mean, std  
 
+def mse_from_encoding_dict(encoding_dict,steps_ahead):
+    dim_y = encoding_dict['batch_inference']['y']['train'].shape[-1]
+    mse_dict = dict()
+    
+    for k in steps_ahead:
+        y_key = 'y_pred' if k == 1 else f'y_{k}_pred'
+        mse_k = compute_mse(y_flat=encoding_dict['batch_inference']['y']['train'][:, k:, :].reshape(-1, dim_y),
+                            y_hat_flat=encoding_dict['batch_inference'][y_key]['train'].reshape(-1, dim_y))
+        mse_dict[y_key] = mse_k
+        
+    return mse_dict
