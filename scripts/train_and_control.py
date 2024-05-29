@@ -3,17 +3,18 @@ from collections import defaultdict
 import os
 os.environ['TQDM_DISABLE'] = '1'
 
+import matplotlib
 import matplotlib.pyplot as plt
 import torch
 from torch.utils.data import DataLoader
 
-from data.SSM import NonlinearStateSpaceModel, AffineTransformation, SwissRoll, plot_parametric
+from data.SSM import NonlinearStateSpaceModel, SwissRoll
+from plot_utils import plot_parametric, plot_vs_time
 from datasets import DFINEDataset
 from trainers.TrainerDFINE import TrainerDFINE
 from config_dfine import get_default_config
 from time_series_utils import z_score_tensor
 from controller import LQGController
-
 
 class WrapperModule(torch.nn.Module):
     def __init__(self, f):
@@ -33,19 +34,15 @@ dim_y = 3
 A = torch.tensor([[.95,   0.05],
                   [.05,   .9]])
 b = torch.tensor([0., 0])
-A_fn = AffineTransformation(A,b)
 B = torch.eye(dim_x, dim_u)
 C = torch.eye(dim_a, dim_x)
 f = SwissRoll(dim_y)
 
-# Q = 1e-45 * torch.diag(torch.ones(dim_x))  #cf W in DFINE
-# R = 1e-45 * torch.diag(torch.ones(dim_a))  #cf R in DFINE
-# S = 1e-45 * torch.diag(torch.ones(dim_y))
 Q = 1e-2 * torch.diag(torch.ones(dim_x))  #cf W in DFINE
 R = 1e-2 * torch.diag(torch.ones(dim_a))  #cf R in DFINE
 S = 2e-3 * torch.diag(torch.ones(dim_y))
 
-ssm = NonlinearStateSpaceModel(A_fn,B,C,f, Q,R,S)
+ssm = NonlinearStateSpaceModel(A,b,B,C,f, Q,R,S)
 
 print(ssm)
 #%% Generate data
@@ -73,28 +70,24 @@ else:
 xmin = -10
 xmax = 10
 x0 = torch.rand(num_seqs, dim_x, dtype=torch.float32)*(xmax-xmin) + xmin
-x,a,y = ssm.generate_trajectory(x0=x0, u_seq=u, num_seqs=num_seqs)
+x,a,y = ssm(x0=x0, u_seq=u, num_seqs=num_seqs)
 # y, y_mean, y_std = z_score_tensor(y)
 
 #%% Plot data sample
 # fig, ax = f.plot_manifold(hlim=(a[:,:,1].min(), a[:,:,1].max()), rlim=(a[:,:,0].min(), a[:,:,0].max()))
-
 ax_x = ax_a = ax_y = None
 cb = True
 for i in range(10):
-    _, ax_x = plot_parametric(x[i], mode='line', ax=ax_x, add_cbar=cb, varname='x')
-    _, ax_a = plot_parametric(a[i], mode='line', ax=ax_a, add_cbar=cb, varname='a')
-    _, ax_y = plot_parametric(y[i], mode='line', ax=ax_y, add_cbar=cb, varname='y')
+    _, ax_x = plot_parametric(x[i], mode='line', ax=ax_x, cbar=cb, varname='x')
+    _, ax_a = plot_parametric(a[i], mode='line', ax=ax_a, cbar=cb, varname='a')
+    _, ax_y = plot_parametric(y[i], mode='line', ax=ax_y, cbar=cb, varname='y')
     cb = False
-
-# fig, ax = plot_x(u[i])
-# ax.set_ylabel('u')
 
 
 #%% Train DFINE
 use_ground_truth = False
-load_model = False
-# load_model = "/Users/dtyulman/Drive/dfine_ctrl/torchDFINE/results/train_logs/2024-03-15/154837_u={'type': 'binary_noise', 'lo': -0.5, 'hi': 0.5}"
+# load_model = False
+load_model = "/Users/dtyulman/Drive/dfine_ctrl/torchDFINE/results/train_logs/2024-03-15/154837_u={'type': 'binary_noise', 'lo': -0.5, 'hi': 0.5}"
 # load_model = '/Users/dtyulman/Drive/dfine_ctrl/torchDFINE/results/train_logs/2024-04-11/164847_u=binary_noise_-0.5_0.5'
 
 config = get_default_config()
@@ -147,28 +140,35 @@ with torch.no_grad():
 
 
 #%% Plot encoder/decoder outputs
-rlim=(0, 4*torch.pi)#(a[:,:,0].min(), a[:,:,0].max())
-hlim=(-1,1)#(a[:,:,1].min(), a[:,:,1].max())
-r = torch.linspace(rlim[0], rlim[1], 400)
+#ground truth manifold
+rlim=(0, 3*torch.pi)#(a[:,:,0].min(), a[:,:,0].max())
+hlim=(-6,6)#(a[:,:,1].min(), a[:,:,1].max())
+r = torch.linspace(rlim[0], rlim[1], 100)
 h = torch.linspace(hlim[0], hlim[1], 10)
 a_inputs_gt = torch.cartesian_prod(r, h)
-y_samples_gt = ssm.compute_observation(a_inputs_gt)
+y_samples_gt = ssm.compute_observation(a_inputs_gt, noise=False)
 
-a_inputs = a_inputs_gt
+#learned manifold
+rlim=(-8*torch.pi, 8*torch.pi)#(a[:,:,0].min(), a[:,:,0].max())
+hlim=(-5,5)#(a[:,:,1].min(), a[:,:,1].max())
+r = torch.linspace(rlim[0], rlim[1], 400)
+h = torch.linspace(hlim[0], hlim[1], 10)
+a_inputs = torch.cartesian_prod(r, h)
 with torch.no_grad():
     y_samples = trainer.dfine.decoder(a_inputs)
 
+#plotting
 fig = plt.figure(figsize=(7,5))
 ax = fig.add_subplot(1,1,1, projection='3d' if dim_y==3 else None)
-im1 = ax.scatter(*y_samples_gt.T, c=a_inputs_gt[:,1], marker='.', cmap='coolwarm')
-im2 = ax.scatter(*y_samples.T,    c=a_inputs[:,1], marker='.', cmap='viridis')
+im1 = ax.scatter(*y_samples_gt.T, marker='.', c='k')#a_inputs_gt[:,1], cmap='coolwarm')
+im2 = ax.scatter(*y_samples.T,    marker='.', c='r')#a_inputs[:,1],    cmap='viridis')
 
 ax.set_title('Decoder outputs')
 ax.set_xlabel('$y_1$')
 if dim_y>1: ax.set_ylabel('$y_2$')
 if dim_y>2: ax.set_zlabel('$y_3$')
-fig.colorbar(im1, label='SSM manifold h input $d_h(t)$')
-fig.colorbar(im2, label='DFINE decoder h input $a_1(t)$')
+# fig.colorbar(im1, label='SSM manifold h input $d_h(t)$')
+# fig.colorbar(im2, label='DFINE decoder h input $a_1(t)$')
 
 fig.tight_layout()
 
@@ -185,64 +185,55 @@ fig.tight_layout()
 
 # fig.tight_layout()
 
+
 #%% Control
-var_names = ['x', 'a', 'y']
-
-model = trainer.dfine
-
+model = deepcopy(trainer.dfine)
 plant = deepcopy(ssm)
-plant.global_noise_toggle = False
+# plant.Q_distr = plant.R_distr = plant.S_distr = None
 
 controller = LQGController(plant, model)
-num_steps = 50
+num_steps = 100
+t_on = 20#-1
+t_off = 80#float('inf')
 Q = 1
-R = 5
+R = .1
 
 # Set start and target points. Must be set in plant's latent space `a` or `x` to ensure valid `y`
-x0 = torch.tensor([0., 0.], dtype=torch.float32)
-# x_ss_1 = torch.tensor([2.,])
-# x_ss_2 = torch.tensor([2.,])
-x_ss_1 = torch.linspace(-7, 7, 20)
-x_ss_2 = torch.linspace(-7, 7, 20)
-x_ss_list = torch.cartesian_prod(x_ss_1, x_ss_2)
-idx_list = torch.cartesian_prod(torch.arange(len(x_ss_1)), torch.arange(len(x_ss_2)))
+x_ss_0 = torch.tensor([2.,])
+x_ss_1 = torch.tensor([2.,])
+# x_ss_0 = torch.linspace(-10, 10, 30)
+# x_ss_1 = torch.linspace(-10, 10, 30)
 
-err = defaultdict(lambda: torch.full((len(x_ss_1), len(x_ss_2)), torch.nan))
-for x_ss, (i,j) in zip(x_ss_list, idx_list):
-    print(f'x_ss={x_ss.numpy()}, idx=({i},{j})')
-    _, a_ss, y_ss = controller.generate_observation(x_ss)
-    outputs = controller.run_control(y_ss, x0=x0, num_steps=num_steps, Q=Q, R=R)
-    outputs['x_ss'] = x_ss
-    outputs['a_ss'] = a_ss
+x_ss = torch.cartesian_prod(x_ss_0, x_ss_1)
+a_ss = plant.compute_manifold_latent(x_ss)
+y_ss = plant.compute_observation(a_ss)
 
-    err['x'][i,j] = (x_ss - outputs['x'][:,-5:,:].mean(dim=1)).norm()
-    err['a'][i,j] = (a_ss - outputs['a'][:,-5:,:].mean(dim=1)).norm()
-    err['y'][i,j] = (y_ss - outputs['y'][:,-5:,:].mean(dim=1)).norm()
+x0 = torch.tensor([0., 0.], dtype=torch.float32).expand(x_ss.shape)
+outputs = controller.run_control(y_ss, {'x0':x0}, num_steps=num_steps, Q=Q, R=R, t_on=t_on, t_off=t_off)
 
-
-#%% Plot controlled dynamics
-fig, ax = controller.plot_all(**outputs)
+#% Plot controlled dynamics
+fig, ax = controller.plot_all(**outputs, x=plant.x_seq, x_ss=x_ss, a=plant.a_seq, a_ss=a_ss)
 
 
 #%% Plot error heatmaps
+#compute errors
+err = {'x': ( x_ss - plant.x_seq[:,-10:,:].mean(dim=1) ).norm(dim=1).reshape(len(x_ss_0), len(x_ss_1)),
+       'a': ( a_ss - plant.a_seq[:,-10:,:].mean(dim=1) ).norm(dim=1).reshape(len(x_ss_0), len(x_ss_1)),
+       'y': ( y_ss - plant.y_seq[:,-10:,:].mean(dim=1) ).norm(dim=1).reshape(len(x_ss_0), len(x_ss_1))}
+var_names = err.keys()
 
-# Barplot to eyeball good values for vmax in heatmaps
-# fig, axs = plt.subplots(1, len(var_names), figsize=(13,4))
-# for var,ax in zip(var_names, axs):
-#     ax.hist(err[var].flatten())
-#     ax.set_title(f'{var} errors distribution')
-# fig.tight_layout()
-
-cmap = plt.cm.get_cmap('Reds')
+#fix cmap
+cmap = matplotlib.colormaps['Reds']
 cmap.set_over('grey')
 vmax = defaultdict(lambda: None)
-vmax.update({'x': 5, 'a': 5, 'y': 10})
+vmax.update({'x': 17, 'a': 17, 'y': 10})
 
+#plot
 fig, axs = plt.subplots(1,len(var_names), sharex=True, sharey=True, figsize=(13,4))
 for var,ax in zip(var_names, axs):
-    pcm = ax.pcolormesh(x_ss_1, x_ss_2, err[var].T, vmin=0, vmax=vmax[var], cmap=cmap)
-    ax.scatter(*x0, c='k')
-    ax.text(*x0+0.15, '$x^{init}$')
+    pcm = ax.pcolormesh(x_ss_0, x_ss_1, err[var].T, vmin=0, vmax=vmax[var], cmap=cmap)
+    ax.scatter(*x0[0], c='k')
+    ax.text(*x0[0]+0.15, '$x^{init}$')
     ax.axis('square')
     plt.colorbar(pcm, ax=ax, extend='max' if vmax[var] is not None else None)
     ax.set_title(f'${var}$ error')
@@ -250,4 +241,11 @@ for var,ax in zip(var_names, axs):
     ax.set_ylabel('Target $x^{ss}_1$')
 fig.suptitle(f"$Q={'' if Q==1 else f'{Q}\\times '}C^TC; R={'' if R==1 else f'{R}\\times '}I$")
 fig.tight_layout()
+fig.tight_layout()
+
+#%% Histogram to eyeball good values for vmax in heatmaps
+fig, axs = plt.subplots(1, len(var_names), sharex=True, figsize=(13,4))
+for var,ax in zip(var_names, axs):
+    ax.hist(err[var].flatten(), bins=100)
+    ax.set_title(f'{var} errors distribution')
 fig.tight_layout()

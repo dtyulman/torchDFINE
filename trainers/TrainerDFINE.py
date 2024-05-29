@@ -156,7 +156,7 @@ class TrainerDFINE(BaseTrainer):
 
         # Logging forward prediction loss and its scale
         log_str += f"forward_pred_loss: {self.metrics[train_valid]['forward_pred_loss'].compute():.5f}, scale_forward_pred: {self.dfine.scale_forward_pred:.5f}\n"
-        
+
         # Finally, log model_loss and total_loss to optimize
         log_str += f"model_loss: {self.metrics[train_valid]['model_loss'].compute():.5f}, total_loss: {self.metrics[train_valid]['total_loss'].compute():.5f}\n"
         return log_str
@@ -229,7 +229,8 @@ class TrainerDFINE(BaseTrainer):
                                      verbose=False)
 
                 # Update the step
-                print(f'epoch={epoch}, batch={batch_idx}, step={step}, loss={loss}')
+                if step%10 == 0:
+                    print(f'epoch={epoch}, batch={batch_idx}, step={step}, loss={loss}')
                 step += 1
 
         # Get the runtime for the training epoch

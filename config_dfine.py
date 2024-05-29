@@ -13,14 +13,15 @@ from python_utils import flatten_dict, unflatten_dict
 from datetime import date, datetime
 
 
-#### Initialization of default and recommended (except dimensions and hidden layer lists, set them suitable for data to fit) config
+# Initialization of default and recommended config
+# (except dimensions and hidden layer lists, set them suitable for data to fit)
 _config = CN()
 
-## device and seed
+# device and seed
 _config.device = 'cpu'
 _config.seed = int(torch.randint(low=0, high=100000, size=(1,)))
 
-## model
+# model
 _config.model = CN()
 _config.model.no_manifold = False # Remove the nonlinear manifold autoencoder, reducing the model to a pure LDM
 _config.model.hidden_layer_list = None if _config.model.no_manifold else [32,32,32] # Hidden layer list where each element is the number of neurons for that hidden layer of DFINE encoder/decoder. Please use [20,20,20,20] for nonlinear manifold simulations.
@@ -47,13 +48,14 @@ _config.model.behv_from_smooth = True # Boolean for whether to decode behavior f
 _config.model.save_dir = os.path.join(os.getcwd(), 'results', 'train_logs', date.today().isoformat(), datetime.now().strftime('%H%M%S')) # Main save directory for DFINE results, plots and checkpoints
 _config.model.save_steps = 10 # Number of steps to save DFINE checkpoints
 
-## loss
+# loss
 _config.loss = CN()
 _config.loss.scale_l2 = 2e-3 # L2 regularization loss scale (we recommend a grid-search for the best value, i.e., a grid of [1e-4, 5e-4, 1e-3, 2e-3]). Please use 0 for nonlinear manifold simulations as it leads to a better performance.
 _config.loss.steps_ahead = [1,2,3,4] # List of number of steps ahead for which DFINE is optimized. For unsupervised and supervised versions, default values are [1,2,3,4] and [1,2], respectively.
 _config.loss.scale_behv_recons = 20 # If _config.model.supervise_behv is True, scale for MSE of behavior reconstruction (We recommend a grid-search for the best value. It should be set to a large value).
 _config.loss.scale_forward_pred = 0 # Loss scale for forward prediction loss (output is predicted solely from the input)
-## training
+
+# training
 _config.train = CN()
 _config.train.batch_size = 32 # Batch size
 _config.train.num_epochs = 200 # Number of epochs for which DFINE is trained
@@ -61,12 +63,12 @@ _config.train.valid_step = 1 # Number of steps to check validation data performa
 _config.train.plot_save_steps = 50 # Number of steps to save training/validation plots
 _config.train.print_log_steps = 10 # Number of steps to print training/validation logs
 
-## loading
+# loading
 _config.load = CN()
 _config.load.ckpt = -1 # Number of checkpoint to load
 _config.load.resume_train = False # Boolean for whether to resume training from the epoch where checkpoint is saved
 
-## learning rate
+# learning rate
 _config.lr = CN()
 _config.lr.scheduler = 'explr' # Learning rate scheduler type, options are explr (StepLR, purely exponential if explr.step_size == 1), cyclic (CyclicLR) or constantlr (constant learning rate, no scheduling)
 _config.lr.init = 0.02 # Initial learning rate
@@ -84,7 +86,7 @@ _config.lr.explr = CN()
 _config.lr.explr.gamma = 0.9 # Multiplicative factor of learning rate decay
 _config.lr.explr.step_size = 15 # Steps to decay the learning rate, becomes purely exponential if step is 1
 
-## optimizer
+# optimizer
 _config.optim = CN()
 _config.optim.eps = 1e-8 # Epsilon for Adam optimizer
 _config.optim.grad_clip = 1 # Gradient clipping norm
