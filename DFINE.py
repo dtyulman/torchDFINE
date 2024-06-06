@@ -347,6 +347,7 @@ class DFINE(nn.Module):
 
         return y_pred_k, a_pred_k, x_pred_k
 
+
     def get_forward_prediction(self, u):
         num_seq, num_steps, _ = u.shape
         _, x_forward_pred, _, _ = self.ldm.compute_forward_prediction(u=u)
@@ -433,8 +434,8 @@ class DFINE(nn.Module):
             mse_forward_pred = compute_mse(y_flat=y.reshape(-1, self.dim_y),
                                    y_hat_flat=y_forward_pred.reshape(-1, self.dim_y),
                                    mask_flat=mask.reshape(-1,))
-            
-            forward_pred_loss = self.scale_forward_pred * mse_forward_pred            
+
+            forward_pred_loss = self.scale_forward_pred * mse_forward_pred
             loss_dict['forward_pred_loss'] = forward_pred_loss
 
         # Final loss is summation of model loss (sum of k-step ahead MSEs), behavior reconstruction loss and L2 regularization loss

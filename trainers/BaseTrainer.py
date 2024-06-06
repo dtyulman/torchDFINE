@@ -5,8 +5,8 @@ Hamidreza Abbaspourazad*, Eray Erturk* and Maryam M. Shanechi
 Shanechi Lab, University of Southern California
 '''
 
-import os 
-import torch 
+import os
+import torch
 import datetime
 import logging
 from torch.utils.tensorboard import SummaryWriter
@@ -19,14 +19,14 @@ class BaseTrainer:
 
     def __init__(self, config):
         '''
-        Initializer of BaseTrainer. 
+        Initializer of BaseTrainer.
 
         Parameters:
         ------------
         - config: yacs.config.CfgNode, yacs config which contains all hyperparameters required to create the DFINE model
-                                       Please see config.py for the hyperparameters, their default values and definitions. 
+                                       Please see config.py for the hyperparameters, their default values and definitions.
         '''
-        
+
         self.config = config
 
         # Checkpoint and plot save directories, create directories if they don't exist
@@ -38,11 +38,11 @@ class BaseTrainer:
 
         # Tensorboard summary writer
         self.writer = SummaryWriter(log_dir=os.path.join(self.config.model.save_dir, 'summary'))
-    
+
 
     def _save_config(self, config_save_name='config.yaml'):
         '''
-        Saves the config inside config.model.save_dir 
+        Saves the config inside config.model.save_dir
 
         Parameters:
         ------------
@@ -52,12 +52,12 @@ class BaseTrainer:
         config_save_path = os.path.join(self.config.model.save_dir, config_save_name)
         with open(config_save_path, 'w') as outfile:
             outfile.write(self.config.dump())
-    
+
 
     def _get_optimizer(self, params):
         '''
         Creates the Adam optimizer with initial learning rate and epsilon specified inside config by config.lr.init and config.optim.eps, respectively
-        
+
         Parameters:
         ------------
         - params: Parameters to be optimized by the optimizer
@@ -67,8 +67,8 @@ class BaseTrainer:
         - optimizer: Adam optimizer with desired learning rate, epsilon to optimize parameters specified by params
         '''
 
-        optimizer = torch.optim.Adam(params=params, 
-                                     lr=self.config.lr.init, 
+        optimizer = torch.optim.Adam(params=params,
+                                     lr=self.config.lr.init,
                                      eps=self.config.optim.eps)
         return optimizer
 
@@ -91,7 +91,7 @@ class BaseTrainer:
 
     def _get_metrics(self):
         '''
-        Empty function, overwritten function must return metric names as list metrics as nested dictionary. Keys are: 
+        Empty function, overwritten function must return metric names as list metrics as nested dictionary. Keys are:
             - train: dict, Training Mean metrics
             - valid: dict, Validation Mean metrics
         '''
@@ -100,7 +100,7 @@ class BaseTrainer:
 
     def _reset_metrics(self, train_valid='train'):
         '''
-        Resets the metrics 
+        Resets the metrics
 
         Parameters:
         ------------
@@ -139,7 +139,7 @@ class BaseTrainer:
 
         Parameters:
         ------------
-        - prefix: str, Prefix which is used as logger's name and .log file's name, 'dfine' by default 
+        - prefix: str, Prefix which is used as logger's name and .log file's name, 'dfine' by default
 
         Returns:
         ------------
@@ -159,11 +159,11 @@ class BaseTrainer:
         for handler in handlers:
             logger.removeHandler(handler)
             handler.close()
-        
+
         # Create file handler which logs even debug messages
         fh = logging.FileHandler(log_path, mode='w')
         fh.setLevel(logging.DEBUG)
-        
+
         # Create console handler with a higher log level
         ch = logging.StreamHandler()
         ch.setLevel(logging.DEBUG)
@@ -179,7 +179,7 @@ class BaseTrainer:
 
         return logger
 
-    
+
     def _load_ckpt(self, model, optimizer, lr_scheduler=None):
         '''
         Loads the checkpoint whose number is specified in the config by config.load.ckpt
@@ -201,12 +201,12 @@ class BaseTrainer:
         load_path = os.path.join(self.config.model.save_dir, 'ckpts', f'{self.config.load.ckpt}_ckpt.pth')
         self.logger.info(f'Loading model from: {load_path}...')
 
-        # Load the checkpoint 
-        try: 
+        # Load the checkpoint
+        try:
             ckpt = torch.load(load_path)
-        except:
+        except Exception as e:
             self.logger.error('Ckpt path does not exist!')
-            assert False, ''
+            raise e
 
         # If config.load.resume_train is True, load optimizer and learning rate scheduler
         if self.config.load.resume_train:
@@ -216,7 +216,7 @@ class BaseTrainer:
             except:
                 self.logger.error('Optimizer cannot be loaded!, check if optimizer type is consistent!')
                 assert False, ''
-            
+
             if lr_scheduler is not None:
                 try:
                     lr_scheduler.load_state_dict(ckpt['lr_scheduler'])
@@ -229,7 +229,7 @@ class BaseTrainer:
         except:
             self.logger.error('Given architecture in config does not match the architecture of given checkpoint!')
             assert False, ''
-        
+
         self.logger.info(f'Checkpoint succesfully loaded from {load_path}!')
         return model, optimizer, lr_scheduler
 
@@ -251,10 +251,10 @@ class BaseTrainer:
                 grad_norm =  p.grad.detach().data.cpu().norm(2)
                 total_norm += grad_norm ** 2
                 self.writer.add_scalar('grads/' + name + f"/{prefix}_grad", grad_norm, step)
-            
+
         total_norm = total_norm ** 0.5
         self.writer.add_scalar(f'grads/total_grad_{prefix}_norm', total_norm, step)
-        
+
 
     def _save_ckpt(self, epoch, model, optimizer, lr_scheduler=None):
         '''
@@ -297,7 +297,7 @@ class BaseTrainer:
         pass
 
 
-    def valid_epoch(self, epoch, valid_loader): 
+    def valid_epoch(self, epoch, valid_loader):
         '''
         Empty function, overwritten function performs single epoch validation
 
@@ -319,5 +319,5 @@ class BaseTrainer:
         - train_loader: torch.utils.data.DataLoader, Training dataloader
         - valid_loader: torch.utils.data.DataLoader, Validation dataloader
         '''
-        
+
         pass
