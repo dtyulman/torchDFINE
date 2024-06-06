@@ -12,7 +12,7 @@ class RNN(nn.Module):
     #https://www.proquest.com/docview/2668441219
     """
     Continuous-time RNN:
-        tau dx/dt = -x + f(W @ x_t + b + Bs @ s_t + Bu @ u_t)
+        tau dx/dt = -x + f(W @ x + b + Bs @ s + Bu @ u)
         y = Wy @ x + by
     where
         x_t: hidden neuron firing rate
@@ -53,10 +53,11 @@ class RNN(nn.Module):
             self.by = nn.Parameter(torch.empty(dim_y, 1))
 
         self._init_params()
+        self.t = self.x = self.y = None
 
 
     def _init_params(self):
-        #input parameters (note, control input matrix B is fixed)
+        #input parameters (note, control input matrix Bu is fixed)
         nn.init.eye_(self.Bs)
 
         #dynamics parameters
@@ -79,7 +80,7 @@ class RNN(nn.Module):
         return y.squeeze(-1)
 
 
-    def step_neuron_dynamics(self, x, s=None, u=None):
+    def compute_next_neurons(self, x, s=None, u=None):
         pre_x_next = self.W @ x.unsqueeze(-1) + self.b #[x,x] @ [b,x,1] + [x,1] -> [b,x,1]
         if s is not None:
             pre_x_next += self.Bs @ s.unsqueeze(-1) # += [x,s] @ [b,s,1] -> [b,x,1]
@@ -90,46 +91,57 @@ class RNN(nn.Module):
         return x_next
 
 
-    def step(self, x, s=None, u=None):
+    def _update_state(self, s, u):
         """
         inputs:
-            x: [b,x], previous timestep neuron firing rate
             s: [b,s], task instruction input
             u: [b,u], control input
         returns:
             x_next: [b,x]
             y_next: [b,y]
         """
-        x_next = self.step_neuron_dynamics(x, s, u)
-        y_next = self.compute_observation(x_next)
-        return x_next, y_next
+        self.x = self.compute_next_neurons(self.x, s, u)
+        self.y = self.compute_observation(self.x)
+        return self.x, self.y
+
+
+    def _log_state(self):
+        self.t += 1
+        self.x_seq[:, self.t, :] = self.x
+        self.y_seq[:, self.t ,:] = self.y
 
 
     def init_state(self, x0=None, s_seq=None, u_seq=None, num_seqs=None, num_steps=None):
+        #extract/validate dimensions
         num_seqs, dim_x = verify_shape(x0, [num_seqs, self.dim_x])
         num_seqs, num_steps, dim_s = verify_shape(s_seq, [num_seqs, num_steps, self.dim_s])
-        num_seqs, num_steps, dim_u = verify_shape(u_seq, [num_seqs, num_steps, self.dim_u])
+        try:
+            num_seqs, num_steps, dim_u = verify_shape(u_seq, [num_seqs, num_steps, self.dim_u])
+        except AssertionError:
+            num_seqs, _, dim_u = verify_shape(u_seq, [num_seqs, num_steps-1, self.dim_u])
 
+        #set defaults if needed
         x0    = x0    if x0    is not None else torch.zeros(num_seqs, self.dim_x)
         s_seq = s_seq if s_seq is not None else torch.zeros(num_seqs, num_steps, self.dim_s)
         u_seq = u_seq if u_seq is not None else torch.zeros(num_seqs, num_steps, self.dim_u)
 
+        #allocate memory for logging
         self.x_seq = torch.full((num_seqs, num_steps, self.dim_x), torch.nan) #[b,t,x]
-        self.y_seq = torch.full((num_seqs, num_steps, self.dim_y), torch.nan) #[b,t,x]
+        self.y_seq = torch.full((num_seqs, num_steps, self.dim_y), torch.nan) #[b,t,y]
 
-        self.x_seq[:,0,:] = x0
-        self.y_seq[:,0,:] = self.compute_observation(self.x_seq[:,0,:])
+        #initialize state
+        self.t = -1
+        self.x = x0
+        self.y = self.compute_observation(x0)
+        RNN._log_state(self)
 
         return x0, s_seq, u_seq, num_seqs, num_steps
 
 
-    def get_state(self, t):
-        return self.x_seq[:,t,:]
-
-
-    def set_state(self, x,y, t):
-        self.x_seq[:,t,:] = x
-        self.y_seq[:,t,:] = y
+    def step(self, s=None, u=None):
+        next_state = self._update_state(s, u)
+        self._log_state()
+        return next_state
 
 
     def forward(self, x0=None, s_seq=None, u_seq=None, num_seqs=None, num_steps=None):
@@ -142,15 +154,11 @@ class RNN(nn.Module):
             x_seq: [b,t,x], neural firing rate sequence
             y_seq: [b,t,y], observation sequence
         """
-        #explicitly call class's init_state() to avoid subclasses from chaing its behavior
-        x0, s_seq, u_seq, num_seqs, num_steps = RNN.init_state(self, x0=x0, s_seq=s_seq, u_seq=u_seq, num_seqs=num_seqs, num_steps=num_steps)
-
-        #store x_seq as list and convert to tensor at the end, avoids in-place modification for proper gradient computation
-        x_seq = [x0]
-        for t in range(1,num_steps):
-            x_t = self.step_neuron_dynamics(x=x_seq[t-1], u=u_seq[:,t-1,:], s=s_seq[:,t-1,:]) #[b,x]
-            x_seq.append(x_t)
-        self.x_seq = torch.stack(x_seq, dim=1) #[b,t,x]
+        #explicitly call class's init_state() to avoid subclasses from changing its behavior
+        x, s_seq, u_seq, num_seqs, num_steps = RNN.init_state(self, x0=x0, s_seq=s_seq, u_seq=u_seq, num_seqs=num_seqs, num_steps=num_steps)
+        for t in range(num_steps-1):
+            x = self.compute_next_neurons(x=x, u=u_seq[:,t,:], s=s_seq[:,t,:]) #[b,x]
+            self.x_seq[:,t+1,:] = x
         self.y_seq = self.compute_observation(self.x_seq)
 
         return self.x_seq, self.y_seq
@@ -158,33 +166,36 @@ class RNN(nn.Module):
 
 
 class ReachRNN(RNN):
-    def step(self, x, y, s=None, u=None):
-        x_next, v_next = super().step(x, s, u)
-        y_next = y + v_next*self.dt
-        return x_next, v_next, y_next
+    def _update_state(self, s=None, u=None):
+        self.x, self.v = super()._update_state(self, s, u)
+        self.y = self.y + self.v*self.dt
+        return self.x, self.v, self.y
+
+
+    def _log_state(self):
+        super()._log_state()
+        self.v_seq[:, self.t ,:] = self.v
 
 
     def init_state(self, y0=None, **kwargs):
+        # Initialize neurons, velocity
         x0, s_seq, u_seq, num_seqs, num_steps = super().init_state(**kwargs)
 
+        # Initialize position
+        #extract/validate dimensions
         num_seqs, dim_y = verify_shape(y0, [num_seqs, self.dim_y])
+
+        #set defaults if needed
         y0 = y0 if y0 is not None else torch.zeros(num_seqs, self.dim_y)
 
-        self.v_seq = self.y_seq
-        self.y_seq = torch.full((num_seqs, num_steps, self.dim_y), torch.nan) #[b,t,y]
-        self.y_seq[:,0,:] = y0
+        #allocate memory for logging
+        self.v_seq = torch.full((num_seqs, num_steps, self.dim_y), torch.nan) #[b,t,y]
+
+        #initialize state
+        self.v_seq[:,0,:] = self.v = self.y #v is now the neuron readout (velocity)
+        self.y_seq[:,0,:] = self.y = y0 #y is the position
 
         return x0, y0, s_seq, u_seq, num_seqs, num_steps
-
-
-    def get_state(self, t):
-        return self.x_seq[:,t,:], self.y_seq[:,t,:]
-
-
-    def set_state(self, x,v,y, t):
-        self.x_seq[:,t,:] = x
-        self.v_seq[:,t,:] = v
-        self.y_seq[:,t,:] = y
 
 
     def forward(self, x0=None, y0=None, s_seq=None, u_seq=None, num_seqs=None, num_steps=None):

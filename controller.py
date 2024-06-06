@@ -39,7 +39,7 @@ class LQGController():
         return A, B, C
 
 
-    def estimate_latents(self, y_seq, u_seq=None, ground_truth_latents=''):
+    def estimate_latents(self, y_seq, u_seq=None, ground_truth_latents='', steady_state=False):
         """
         inputs:
             y_seq: [b,t,y]: y_{0}  ... y_{t}    or [b,y]: y_{0}
@@ -54,6 +54,7 @@ class LQGController():
             y_seq = y_seq.unsqueeze(1) #[b,t,y]
 
         if ground_truth_latents:
+            assert not steady_state
             t = y_seq.shape[1] - 1 #only needed if using ground_truth_latents
 
         # Estimate model manifold latent state by inverting the observation via the encoder
@@ -65,6 +66,14 @@ class LQGController():
         # Estimate dynamic latent from control inputs and history of manifold latents by Kalman filter
         if 'x' in ground_truth_latents:
             x_hat_seq = self.plant.x_seq[:,:t+1,:]
+        elif steady_state:
+            assert not ground_truth_latents
+            #Kalman update: x_ss = Ax_ss + Bu_ss + b + K(a_ss - C(Ax_ss + Bu_ss + b))
+            # => x_ss = x_ss + K(a_ss - Cx_ss) since x_ss = Ax_ss + Bu_ss + b
+            # => x_ss = Cinv @ a_ss
+            assert u_seq is None, 'Input assumed to be u_ss'
+            _,_,C = self.get_model_matrices()
+            x_hat_seq = (torch.linalg.pinv(C) @ a_hat_seq.unsqueeze(-1)).squeeze(-1) #[x,a]@[b,1,a]->[b,1,x]
         else:
             x_hat_seq = self.model.ldm(a=a_hat_seq, u=u_seq)[1] #[b,t,x]: x_{0} ... x_{t}
 
@@ -120,73 +129,77 @@ class LQGController():
         self.a_hat = torch.full((num_seqs, num_steps, self.model.dim_a), torch.nan) #[b,t,a] manifold latent via encoder
         self.a_hat_fwd = torch.full((num_seqs, num_steps, self.model.dim_a), torch.nan) #[b,t,a] manifold latent via C matrix
         self.y_hat = torch.full((num_seqs, num_steps, self.model.dim_y), torch.nan) #[b,t,y] observation estimate via decoder
-        self.u     = torch.full((num_seqs, num_steps, self.plant.dim_u), torch.nan) #[b,t,u] control input
+        self.u     = torch.full((num_seqs, num_steps-1, self.plant.dim_u), torch.nan) #[b,t-1,u] control input (one step shorter because Tth input never used)
 
         self.x_hat[:,0,:], self.a_hat[:,0,:] = self.estimate_latents(y0, u_prior, ground_truth_latents)
         self.a_hat_fwd[:,0,:], self.y_hat[:,0,:] = self.verify_latents(self.x_hat[:,0,:])
 
 
-    def run_control(self, y_ss, plant_init={}, Q=1, R=1, num_steps=100, t_on=-1, t_off=float('inf'), ground_truth_latents=''):
+    def run_control(self, y_ss, plant_init={}, Q=1, R=1, num_steps=100, t_on=-1, t_off=float('inf'), ground_truth_latents='', controller=None):
         """
         inputs:
             y_ss: [b,y], target
             plant_init: {'var1':[b,z1], ..., 'varN':[b,zN]} for each dynamic plant variable z
             ground_truth_latents: 'a', 'x', or 'ax' or ''. Only when plant is NonlinearStateSpaceModel
         """
+
         num_seqs = y_ss.shape[0]
 
         # Compute control constants
+        bias = 0
+        u_prior = None
+        def step_plant(u): return self.plant.step(u=u)
+        def pad_input(u_seq):
+            """Assume input was zero for t<0, make u_seq=[u_{-1}, u_{0}, ..., u_{t}] with u_{-1}=0
+                input: [b,t,u]: u_{0}, ..., u_{t}
+                returns: [b,t+1,u]: u_{-1},u_{0}, ..., u_{t}"""
+            zero = torch.zeros_like(u_seq[:,0:1,:])
+            return torch.cat((zero, u_seq), dim=1)
+
         if 'RNN' in self.plant.__class__.__name__: #if isinstance(self.plant, RNN): #u = [y_ss; u_lqr]
             Bs, _ = self.model.ldm.B.split([self.plant.dim_s, self.plant.dim_u], dim=1)
             bias = Bs @ y_ss.unsqueeze(-1) #[x,s] @ [b,s,1] -> [b,x,1]
             u_prior = torch.cat((y_ss.unsqueeze(1), #[b,s]->[b,1,s]
                                  torch.zeros(num_seqs,1,self.plant.dim_u)), #[b,1,u]
                                 dim=-1) #[b,1,s+u]
-        else:
-            bias = 0
-            u_prior = None
 
-        G = self.compute_lqr_gain(Q, R) #[u,x]
-        x_hat_ss, a_hat_ss = self.estimate_latents(y_ss, u_prior) #cannot use ground_truth_latents here, not defined #[b,y]->[b,x],[b,a]
+            def step_plant(u): self.plant.step(s=y_ss, u=u)
+
+            _pad_input = pad_input
+            def pad_input(u_seq): #make u = [y_ss; u_lqr]
+                u_seq = _pad_input(u_seq)
+                s_seq = y_ss.unsqueeze(1).expand(-1,u_seq.shape[1],-1) #[b,y]->[b,t,y]
+                u_seq = torch.cat((s_seq, u_seq), dim=-1) #[b,t,s+u]
+
+        x_hat_ss, a_hat_ss = self.estimate_latents(y_ss, steady_state=True) #cannot use ground_truth_latents here, not defined #[b,y]->[b,x],[b,a]
         u_hat_ss = self.compute_steady_state_control(x_hat_ss, bias) #[b,x]->[b,u]
+        if controller is None:
+            G = self.compute_lqr_gain(Q, R) #[u,x]
+            controller = lambda x: (-G @ (x - x_hat_ss).unsqueeze(-1)).squeeze(-1) + u_hat_ss #[u,x] @ [b,x,1] + [b,u] -> [b,u]
 
         # Initialization and logging
         self.plant.init_state(**plant_init, num_steps=num_steps, num_seqs=num_seqs)
-        self.init_model(self.plant.y_seq[:,0,:], num_steps, u_prior=u_prior, ground_truth_latents=ground_truth_latents)
+        self.init_model(self.plant.y_seq[:,0,:].clone(), num_steps, u_prior=u_prior, ground_truth_latents=ground_truth_latents)
 
         # Run controller
         for t in range(num_steps-1):
             # Compute LQR control input
             if t_on <= t <= t_off:
-                self.u[:,t,:] =  (-G @ (self.x_hat[:,t,:] - x_hat_ss).unsqueeze(-1)).squeeze(-1) + u_hat_ss #[u,x] @ [b,x,1] + [b,u] -> [b,u]
-                self.u[:,t,:] = torch.clip(self.u[:,t,:], min=self.u_min, max=self.u_max) #optional hard bounds
+                u_t = controller(self.x_hat[:,t,:].clone())
+                self.u[:,t,:] = torch.clip(u_t, min=self.u_min, max=self.u_max) #optional hard bounds
             else:
                 self.u[:,t,:] = 0
 
             # Step dynamics of plant with control input
-            plant_t = self.plant.get_state(t)
-            if not isinstance(plant_t, tuple):
-                plant_t = (plant_t,)
-            if 'RNN' in self.plant.__class__.__name__: #if isinstance(self.plant, RNN):
-                plant_next = self.plant.step(*plant_t, s=y_ss, u=self.u[:,t,:])
-            else:
-                plant_next = self.plant.step(*plant_t, u=self.u[:,t,:])
-            self.plant.set_state(*plant_next, t+1)
+            step_plant(self.u[:,t,:])
 
             # Estimate latents based on observation and input
             y_seq = self.plant.y_seq[:,:t+2,:] #[b,t,y]: y_{0}, ... y_{t+1}
-            #assume input was zero for t<0, make u_seq=[u_{-1}, u_{0}, ..., u_{t}] with u_{-1}=0
-            u_seq = self.u[:, :t+1, :] #[b,t,u]: u_{0}, ..., u_{t}
-            u_seq = torch.cat((torch.zeros_like(u_seq[:,0:1,:]), u_seq), dim=1) #[b,t,u]: u_{-1},u_{0}, ..., u_{t}
-            if 'RNN' in self.plant.__class__.__name__: #make u = [y_ss; u_lqr]
-                s_seq = y_ss.unsqueeze(1).expand(-1,u_seq.shape[1],-1) #[b,y]->[b,t,y]
-                u_seq = torch.cat((s_seq, u_seq), dim=-1) #[b,t,s+u]
+            u_seq = pad_input(self.u[:, :t+1, :])
             self.x_hat[:,t+1,:], self.a_hat[:,t+1,:] = self.estimate_latents(y_seq, u_seq, ground_truth_latents=ground_truth_latents)
 
-            # Additional logging which observations correspond to the inferred latents
-            self.a_hat_fwd[:,t+1,:], self.y_hat[:,t+1,:] = self.verify_latents(self.x_hat[:,t+1,:])
-        #would like to do this instead but introduces numerical errors
-        # self.a_hat_fwd, self.y_hat = self.verify_latents(self.x_hat)
+        # Additional logging which observations correspond to the inferred latents
+        self.a_hat_fwd, self.y_hat = self.verify_latents(self.x_hat) #[b,t,a] manifold latent via C matrix; [b,t,y] observation estimate via decoder
         a_hat_ss_fwd, y_hat_ss = self.verify_latents(x_hat_ss) #[b,x]->[b,a],[b,y]
 
         return {'x_hat':self.x_hat,  'a_hat':self.a_hat,  'y_hat':self.y_hat, 'u':self.u, 'y':self.plant.y_seq,
