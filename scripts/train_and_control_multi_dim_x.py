@@ -9,6 +9,7 @@ os.environ['TQDM_DISABLE'] = '1'
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
+torch.manual_seed(10)
 from torch.utils.data import DataLoader
 from controller import LQGController
 from plot_utils import plot_parametric
@@ -33,12 +34,13 @@ parser = argparse.ArgumentParser(description='MDFINE on Sabes Dataset')
 # Simulation related settings
 parser.add_argument('--no_manifold', required=False, default=False, action='store_true')
 parser.add_argument('--fit_D_matrix', required=False, default=False, action='store_true')
-parser.add_argument('--dim_x', type=int, default=10)
+parser.add_argument('--no_input', required=False, default=False, action='store_true')
+parser.add_argument('--dim_x', type=int, default=2)
 parser.add_argument('--scale_forward_pred', type=float, default=0)
-parser.add_argument('--manual_seed', type=int, default=0)
-parser.add_argument('--gpu_id', type=str, default='0', help='set gpu id')
+parser.add_argument('--manual_seed', type=int, default=10)
+parser.add_argument('--gpu_id', type=str, default='2', help='set gpu id')
 args = parser.parse_args()
-torch.manual_seed(args.manual_seed)
+# torch.manual_seed(args.manual_seed)
 os.environ["CUDA_VISIBLE_DEVICES"]=args.gpu_id
 # %%
 dim_x = 2
@@ -61,13 +63,13 @@ Q = 1e-2 * torch.diag(torch.ones(dim_x))  #cf W in DFINE
 R = 1e-2 * torch.diag(torch.ones(dim_a))  #cf R in DFINE
 S = 2e-3 * torch.diag(torch.ones(dim_y))  
 
-ssm = NonlinearStateSpaceModel(A_fn,B,C,f, Q,R,S)
+ssm = NonlinearStateSpaceModel(A_fn,B,C,f,Q,R,S)
 
 print(ssm)
 
 # %%
-use_saved_sim_data = False
-num_seqs = 1024 * 5
+use_saved_sim_data = True
+num_seqs = 1024
 num_steps = 200
 
 # train_input = {'type': 'none'}
@@ -110,12 +112,14 @@ else:
 simulation_save_path = 'simulations/swissroll' + (f"_u={'_'.join([str(train_input[key]) for key in train_input.keys()])}") + '_fixed'
 
 if not use_saved_sim_data:
-    x0 = torch.rand(num_seqs, dim_x, dtype=torch.float32)*20-10
+    xmin = -10
+    xmax = 10
+    x0 = torch.rand(num_seqs, dim_x, dtype=torch.float32)*(xmax-xmin)+xmin
     x,a,y = ssm.generate_trajectory(x0=x0, u_seq=u, num_seqs=num_seqs)
     simulation_dict = dict(zip(['x','a','y','u'],[x,a,y,u]))
-    pickle.dump(simulation_dict,open(simulation_save_path,'wb'))
 else:
-    simulation_dict = pickle.load(open(simulation_save_path,'rb'))
+    # simulation_dict = pickle.load(open(simulation_save_path,'rb'))
+    simulation_dict = pickle.load(open('/home/ebilgin/CalcDFINE/sim_dict.pkl','rb'))
     x = simulation_dict['x']
     a = simulation_dict['a']
     y = simulation_dict['y']
@@ -139,7 +143,6 @@ for i in range(10):
 # %%
 use_ground_truth = False
 load_model = False
-scale_forward_pred = 0
 # load_model = r"C:\Users\bilgi\Desktop\Research\torchDFINE\results\train_logs\2024-04-22\143825_u=binary_noise_-0.5_0.5_no_manifold_dim_x_5"
 # load_model = r"C:\Users\bilgi\Desktop\Research\torchDFINE\results\train_logs\2024-04-19\191223_u=binary_noise_-0.5_0.5_no_manifold_dim_x_2"
 # load_model = r"C:\Users\bilgi\Desktop\Research\torchDFINE\results\train_logs\2024-04-22\143825_u=binary_noise_-0.5_0.5_no_manifold_dim_x_5"
@@ -158,15 +161,18 @@ config.loss.scale_forward_pred = args.scale_forward_pred
 
 no_manifold_key = '_no_manifold' if config.model.no_manifold else ''
 feedthrough_key = '_feedthrough' if config.model.fit_D_matrix else ''
-scale_forward_key = f'_scale_{scale_forward_pred}' if scale_forward_pred > 0 else ''
-config.model.save_dir = config.model.save_dir + (f"_u={'_'.join([str(train_input[key]) for key in train_input.keys()])}") + no_manifold_key + feedthrough_key + scale_forward_key
+no_inp_key = '_no_inp' if args.no_input else ''
+
+scale_forward_key = f'_scale_{args.scale_forward_pred}' if args.scale_forward_pred > 0 else ''
+config.model.save_dir = config.model.save_dir + (f"_u={'_'.join([str(train_input[key]) for key in train_input.keys()])}") + no_manifold_key + feedthrough_key + scale_forward_key + no_inp_key
+if args.no_input: u = torch.zeros_like(u)
 config.model.save_dir = config.model.save_dir + '_dim_x_{}'.format(config.model.dim_x)
 config.model.activation = None if config.model.no_manifold else 'tanh'
 config.model.hidden_layer_list = None if config.model.no_manifold else [20,20,20,20]
 
-config.train.num_epochs = 50
-config.train.batch_size = 32
-config.lr.scheduler = 'constantlr'
+config.train.num_epochs = 200
+config.train.batch_size = 256
+config.lr.scheduler = 'cyclic'
 config.loss.scale_l2 = 0
 
 if load_model:

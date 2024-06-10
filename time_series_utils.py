@@ -166,11 +166,15 @@ def z_score_tensor(y, fit=True, **kwargs):
 def mse_from_encoding_dict(encoding_dict,steps_ahead):
     dim_y = encoding_dict['batch_inference']['y']['train'].shape[-1]
     mse_dict = dict()
-    
+    cc_dict = dict()
     for k in steps_ahead:
         y_key = 'y_pred' if k == 1 else f'y_{k}_pred'
-        mse_k = compute_mse(y_flat=encoding_dict['batch_inference']['y']['train'][:, k:, :].reshape(-1, dim_y),
-                            y_hat_flat=encoding_dict['batch_inference'][y_key]['train'].reshape(-1, dim_y))
+        mse_k = compute_mse(y_flat=encoding_dict['batch_inference']['y']['train'][:, k:, :].reshape(-1, dim_y).cpu(),
+                            y_hat_flat=encoding_dict['batch_inference'][y_key]['train'].reshape(-1, dim_y).cpu())
         mse_dict[y_key] = mse_k
+
+        cc_k = get_pearson_cc(y=encoding_dict['batch_inference']['y']['train'][:, k:, :].reshape(-1, dim_y).cpu(),
+                            y_hat=encoding_dict['batch_inference'][y_key]['train'].reshape(-1, dim_y).cpu())[1]
+        cc_dict[y_key] = cc_k
         
-    return mse_dict
+    return mse_dict, cc_dict
