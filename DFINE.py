@@ -60,15 +60,16 @@ class DFINE(nn.Module):
         self._set_dims_and_scales()
 
         # Initialize LDM parameters
-        A, B, C, W_log_diag, R_log_diag, mu_0, Lambda_0 = self._init_ldm_parameters()
+        A, B, C, D, W_log_diag, R_log_diag, mu_0, Lambda_0 = self._init_ldm_parameters()
 
         # Initialize the LDM
         self.ldm = LDM(dim_x=self.dim_x, dim_u=self.dim_u, dim_a=self.dim_a,
-                       A=A, B=B, C=C,
+                       A=A, B=B, C=C, D=D,
                        W_log_diag=W_log_diag, R_log_diag=R_log_diag,
                        mu_0=mu_0, Lambda_0=Lambda_0,
                        is_W_trainable=self.config.model.is_W_trainable,
-                       is_R_trainable=self.config.model.is_R_trainable)
+                       is_R_trainable=self.config.model.is_R_trainable,
+                       fit_D_matrix=self.config.model.fit_D_matrix)
 
 
         # Initialize encoder and decoder(s)
@@ -170,6 +171,13 @@ class DFINE(nn.Module):
         A = kernel_initializer_fn(self.config.model.init_A_scale * torch.eye(self.dim_x, dtype=torch.float32))
         B = kernel_initializer_fn(self.config.model.init_B_scale * torch.eye(self.dim_x, self.dim_u, dtype=torch.float32))
         C = kernel_initializer_fn(self.config.model.init_C_scale * torch.randn(self.dim_a, self.dim_x, dtype=torch.float32))
+        
+        # If fit_D_matrix flag is false, D will be initially set to zero and also will not be updated with gradient descent
+        if self.config.model.fit_D_matrix:
+            D = kernel_initializer_fn(self.config.model.init_D_scale * torch.randn(self.dim_a, self.dim_u, dtype=torch.float32))
+        else:
+            D = torch.zeros(self.dim_a, self.dim_u, dtype=torch.float32)
+        
 
         W_log_diag = torch.log(kernel_initializer_fn(torch.diag(self.config.model.init_W_scale * torch.eye(self.dim_x, dtype=torch.float32))))
         R_log_diag = torch.log(kernel_initializer_fn(torch.diag(self.config.model.init_R_scale * torch.eye(self.dim_a, dtype=torch.float32))))
@@ -177,7 +185,7 @@ class DFINE(nn.Module):
         mu_0 = kernel_initializer_fn(torch.zeros(self.dim_x, dtype=torch.float32))
         Lambda_0 = kernel_initializer_fn(self.config.model.init_cov * torch.eye(self.dim_x, dtype=torch.float32))
 
-        return A, B, C, W_log_diag, R_log_diag, mu_0, Lambda_0
+        return A, B, C, D, W_log_diag, R_log_diag, mu_0, Lambda_0
 
 
     def step(self, x, u=None, noise=False):
@@ -243,14 +251,20 @@ class DFINE(nn.Module):
         A = self.ldm.A.repeat(num_seq, num_steps, 1, 1)
         B = self.ldm.B.repeat(num_seq, num_steps, 1, 1)
         C = self.ldm.C.repeat(num_seq, num_steps, 1, 1)
+        D = self.ldm.D.repeat(num_seq, num_steps, 1, 1)
         a_pred = (C @ x_pred.unsqueeze(dim=-1)).squeeze(dim=-1) #  (num_seq, num_steps, dim_a, dim_x) x (num_seq, num_steps, dim_x, 1) --> (num_seq, num_steps, dim_a)
         a_filter = (C @ x_filter.unsqueeze(dim=-1)).squeeze(dim=-1) #  (num_seq, num_steps, dim_a, dim_x) x (num_seq, num_steps, dim_x, 1) --> (num_seq, num_steps, dim_a)
         a_smooth = (C @ x_smooth.unsqueeze(dim=-1)).squeeze(dim=-1) #  (num_seq, num_steps, dim_a, dim_x) x (num_seq, num_steps, dim_x, 1) --> (num_seq, num_steps, dim_a)
-
+        
         # Remove the last timestep of predictions since it's T+1|T, which is not of interest to us
         x_pred = x_pred[:, :-1, :]
         Lambda_pred = Lambda_pred[:, :-1, :, :]
         a_pred = a_pred[:, :-1, :]
+
+        if self.config.model.fit_D_matrix:
+            a_pred += (D[:,1:,...] @ u[:,1:,...].unsqueeze(dim=-1)).squeeze(dim=-1) # first index of a_pred is a_{1|0}, therefore, it has to be summed with u_{1}
+            a_filter += (D @ u.unsqueeze(dim=-1)).squeeze(dim=-1)
+            a_smooth += (D @ u.unsqueeze(dim=-1)).squeeze(dim=-1)
 
         # Supervise a_seq or a_smooth to behavior if requested -> behv_hat shape: (num_seq, num_steps, dim_behv)
         if self.config.model.supervise_behv:
@@ -279,7 +293,7 @@ class DFINE(nn.Module):
                           x_pred=x_pred, x_filter=x_filter, x_smooth=x_smooth,
                           Lambda_pred=Lambda_pred, Lambda_filter=Lambda_filter, Lambda_smooth=Lambda_smooth,
                           y_hat=y_hat, y_pred=y_pred, y_filter=y_filter, y_smooth=y_smooth,
-                          A=A, B=B, C=C, behv_hat=behv_hat)
+                          A=A, B=B, C=C, D=D, behv_hat=behv_hat)
         return model_vars
 
 
@@ -314,6 +328,7 @@ class DFINE(nn.Module):
         A = model_vars['A'] if 'A' in model_vars else self.ldm.A
         B = model_vars['B'] if 'B' in model_vars else self.ldm.B
         C = model_vars['C'] if 'C' in model_vars else self.ldm.C
+        D = model_vars['D'] if 'D' in model_vars else self.ldm.D
 
         # Get the required dimensions
         num_seq, num_steps, _ = x_filter.shape
@@ -329,6 +344,8 @@ class DFINE(nn.Module):
             B = B.repeat(num_seq, num_steps, 1, 1)
         if len(C.shape) == 2:
             C = C.repeat(num_seq, num_steps, 1, 1)
+        if len(D.shape) == 2:
+            D = D.repeat(num_seq, num_steps, 1, 1)
 
         # Here is where k-step ahead prediction is iteratively performed
         x_pred_k = x_filter[:, :-k, ...] # [x_{k|0}, x_{(k+1)|1}, ..., x_{T|(T-k)}]
@@ -339,6 +356,9 @@ class DFINE(nn.Module):
                 x_pred_k = (A[:, i:,       ...] @ x_pred_k.unsqueeze(dim=-1) + B[:, i:,       ...] @ u[:, i:,       ...].unsqueeze(dim=-1)).squeeze(dim=-1)
         a_pred_k = (C[:, k:, ...] @ x_pred_k.unsqueeze(dim=-1)).squeeze(dim=-1)
 
+        if self.config.model.fit_D_matrix:
+            a_pred_k += (D[:, k:, ...] @ u[:,k:,...].unsqueeze(dim=-1)).squeeze(dim=-1)
+            
         # After obtaining k-step ahead predicted manifold latent factors, they're decoded to obtain k-step ahead predicted neural observations
         y_pred_k = self.decoder(a_pred_k.view(-1, self.dim_a))
 
@@ -349,10 +369,13 @@ class DFINE(nn.Module):
 
 
     def get_forward_prediction(self, u):
-        num_seq, num_steps, _ = u.shape
+        num_seq, _, _ = u.shape
         _, x_forward_pred, _, _ = self.ldm.compute_forward_prediction(u=u)
         a_forward_pred = (self.ldm.C @ x_forward_pred.unsqueeze(dim=-1)).squeeze(dim=-1)
 
+        if self.config.model.fit_D_matrix:
+            a_forward_pred += (self.ldm.D @ u.unsqueeze(dim=-1)).squeeze(dim=-1)
+        
         # After obtaining k-step ahead predicted manifold latent factors, they're decoded forward predicted neural observations
         y_forward_pred = self.decoder(a_forward_pred.view(-1, self.dim_a))
 
@@ -434,9 +457,9 @@ class DFINE(nn.Module):
             mse_forward_pred = compute_mse(y_flat=y.reshape(-1, self.dim_y),
                                    y_hat_flat=y_forward_pred.reshape(-1, self.dim_y),
                                    mask_flat=mask.reshape(-1,))
+            forward_pred_loss = self.scale_forward_pred * mse_forward_pred            
+        loss_dict['forward_pred_loss'] = forward_pred_loss
 
-            forward_pred_loss = self.scale_forward_pred * mse_forward_pred
-            loss_dict['forward_pred_loss'] = forward_pred_loss
 
         # Final loss is summation of model loss (sum of k-step ahead MSEs), behavior reconstruction loss and L2 regularization loss
         loss = model_loss + behv_loss + reg_loss + forward_pred_loss

@@ -59,7 +59,7 @@ class TrainerDFINE(BaseTrainer):
         self.config.device = self.device # if cuda is asked in config but it's not available, config is also updated
 
         # Initialize the model, optimizer and learning rate scheduler
-        self.dfine = DFINE(self.config);
+        self.dfine = DFINE(self.config)
         self.dfine.to(self.device) # carry the model to the desired device
         self.optimizer = self._get_optimizer(params=self.dfine.parameters())
         self.lr_scheduler = self._get_lr_scheduler()
@@ -761,8 +761,8 @@ class TrainerDFINE(BaseTrainer):
                         start_time = timeit.default_timer()
 
                         batch = carry_to_device(batch, device=self.device)
-                        y_batch, behv_batch, mask_batch = batch
-                        model_vars = self.dfine(y=y_batch, mask=mask_batch)
+                        y_batch, u_batch, behv_batch, mask_batch = batch
+                        model_vars = self.dfine(y=y_batch, u=u_batch, mask=mask_batch)
 
                         # Add to the latent inference time over the batches
                         encoding_dict['latent_inference_time'][train_valid] += timeit.default_timer() - start_time
