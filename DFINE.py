@@ -169,7 +169,7 @@ class DFINE(nn.Module):
 
         kernel_initializer_fn = get_kernel_initializer_function(self.config.model.ldm_kernel_initializer)
         A = kernel_initializer_fn(self.config.model.init_A_scale * torch.eye(self.dim_x, dtype=torch.float32))
-        B = kernel_initializer_fn(self.config.model.init_B_scale * torch.randn(self.dim_x, self.dim_u, dtype=torch.float32))
+        B = kernel_initializer_fn(self.config.model.init_B_scale * torch.eye(self.dim_x, self.dim_u, dtype=torch.float32))
         C = kernel_initializer_fn(self.config.model.init_C_scale * torch.randn(self.dim_a, self.dim_x, dtype=torch.float32))
         
         # If fit_D_matrix flag is false, D will be initially set to zero and also will not be updated with gradient descent
