@@ -167,7 +167,7 @@ class RNN(nn.Module):
 
 class ReachRNN(RNN):
     def _update_state(self, s=None, u=None):
-        self.x, self.v = super()._update_state(self, s, u)
+        self.x, self.v = super()._update_state(s, u)
         self.y = self.y + self.v*self.dt
         return self.x, self.v, self.y
 
