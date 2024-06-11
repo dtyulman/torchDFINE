@@ -1,225 +1,263 @@
 import math
 
 import matplotlib.pyplot as plt
+import numpy as np
 import torch
 import control
 
 from DFINE import DFINE
 from data.SSM import NonlinearStateSpaceModel
+from data.RNN import RNN, ReachRNN
+from python_utils import verify_shape
+from plot_utils import plot_vs_time
 
 
 class LQGController():
-    def __init__(self, plant, model):
-        '''
-        plant is an instance of DFINE or NonlinearStateSpaceModel
+    def __init__(self, plant, model, u_min=-float('inf'), u_max=float('inf')):
+        """
+        plant is an instance of NonlinearStateSpaceModel or RNN
         model is an instance of DFINE
-        '''
+        """
         self.model = model
         self.plant = plant
 
+        assert self.plant.dim_y == self.model.dim_y, 'Observation dimensions must match in plant and model'
+
+        #hard bounds on control inputs
+        self.u_min = u_min
+        self.u_max = u_max
+        assert u_min < u_max
+
 
     def get_model_matrices(self):
-        if isinstance(self.model, DFINE):
-            A = self.model.ldm.A
-            B = self.model.ldm.B
-            C = self.model.ldm.C
-        elif isinstance(self.model, NonlinearStateSpaceModel):
-            A = self.model.A_fn.A
-            B = self.model.B
-            C = self.model.C
-        else:
-            raise ValueError('Invalid model')
-
+        A = self.model.ldm.A
+        B = self.model.ldm.B
+        if 'RNN' in self.plant.__class__.__name__: #if isinstance(self.plant, RNN):
+            Bs, Bu = self.model.ldm.B.split([self.plant.dim_s, self.plant.dim_u], dim=1) #[x,s], [x,u]
+            B = Bu
+        C = self.model.ldm.C
         return A, B, C
 
 
-    def generate_observation(self, x=None, a=None):
-        assert (x is None) != (a is None), 'Must specify exactly one of `x` or `a` for target'
+    def estimate_latents(self, y_seq, u_seq=None, ground_truth_latents='', steady_state=False):
+        """
+        inputs:
+            y_seq: [b,t,y]: y_{0}  ... y_{t}    or [b,y]: y_{0}
+            u_seq: [b,t,u]: u_{-1} ... u_{t-1}
+            ground_truth_latents: 'a', 'x', 'ax', or ''. Only when plant is NonlinearStateSpaceModel
 
-        if a is None:
-            a = self.plant.compute_manifold_latent(x.unsqueeze(-1)).squeeze(-1)
+            #TODO: right now this runs the KF from 0 to t every time which defeats the purpose. Do this
+                   recursively, try control.dlqe()
+        """
 
-        if x is None: #TODO: not tested
-            x = torch.linalg.solve(self.plant.C, a)
-            return self.generate_observation(x=x)
+        if len(y_seq.shape) == 2: #[b,y]
+            y_seq = y_seq.unsqueeze(1) #[b,t,y]
 
-        if isinstance(self.plant, DFINE):
-            y = self.plant.decoder(a)
-        elif isinstance(self.plant, NonlinearStateSpaceModel):
-            y = self.plant.compute_observation(a, noise=False)
+        if ground_truth_latents:
+            assert not steady_state
+            t = y_seq.shape[1] - 1 #only needed if using ground_truth_latents
+
+        # Estimate model manifold latent state by inverting the observation via the encoder
+        if 'a' in ground_truth_latents:
+            a_hat_seq = self.plant.a_seq[:,:t+1,:]
         else:
-            raise ValueError('Invalid plant')
+            a_hat_seq = self.model.encoder(y_seq) #[b,t,a]: a_{0} ... a_{t}
 
-        return x, a, y
-
-
-    def estimate_latents(self, y):
-        """Get start and target points in model's latent space"""
-        if isinstance(self.model, DFINE):
-            #TODO: how to guarantee that this point in latent space actually corresponds to the desired target y_ss?
-            _, _, C = self.get_model_matrices()
-            a_hat = self.model.encoder(y.unsqueeze(0)).squeeze()
-            x_hat = self.model.ldm(a=a_hat.view(1,1,-1),u=None)[1].squeeze() # index 1 has mu_t_all (we need x_{0|0}), it has to be squeezed so that it is compatible with the other functions
-        elif isinstance(self.model, NonlinearStateSpaceModel):
-            #TODO invert SSM's nonlinearity
-            raise NotImplementedError()
+        # Estimate dynamic latent from control inputs and history of manifold latents by Kalman filter
+        if 'x' in ground_truth_latents:
+            x_hat_seq = self.plant.x_seq[:,:t+1,:]
+        elif steady_state:
+            assert not ground_truth_latents
+            #Kalman update: x_ss = Ax_ss + Bu_ss + b + K(a_ss - C(Ax_ss + Bu_ss + b))
+            # => x_ss = x_ss + K(a_ss - Cx_ss) since x_ss = Ax_ss + Bu_ss + b
+            # => x_ss = Cinv @ a_ss
+            assert u_seq is None, 'Input assumed to be u_ss'
+            _,_,C = self.get_model_matrices()
+            x_hat_seq = (torch.linalg.pinv(C) @ a_hat_seq.unsqueeze(-1)).squeeze(-1) #[x,a]@[b,1,a]->[b,1,x]
         else:
-            raise ValueError('Invalid model')
-        return x_hat, a_hat
+            x_hat_seq = self.model.ldm(a=a_hat_seq, u=u_seq)[1] #[b,t,x]: x_{0} ... x_{t}
+
+        return x_hat_seq[:,-1,:], a_hat_seq[:,-1,:] #[b,x],[b,a]
 
 
-    def compute_lqr_gain(self, Q_scale=1, R_scale=1):
+    def verify_latents(self, x):
+        """Check the observation to which the estimated latents correspond, via x->a->y"""
+        _, _, C = self.get_model_matrices() #[a,x]
+        a = (C @ x.unsqueeze(-1)).squeeze(-1) #[a,x]@[b,x,1]->[b,a]
+        y = self.model.decoder(a) #[b,a]->[b,y]
+        return a, y
+
+
+    def compute_lqr_gain(self, Q=1, R=1, penalize_a=True):
         """
         Compute infinite-horizon LQR feedback gain matrix G
-        Cost function: J = \sum_t x^T Q x + u^T R u
+        Cost function: J = \\sum_t x^T Q x + u^T R u
         """
         A, B, C = self.get_model_matrices()
 
-        #effectively puts the penalty on a(t) with Q=I because a(t)=C*x(t)
-        #need to do sqrt trick to ensure Q_lqr is symmetric due to numerical error
-        Q_lqr = (math.sqrt(Q_scale)*C.T) @ (math.sqrt(Q_scale)*C)
-        R_lqr = R_scale * torch.eye(self.model.dim_u)
+        if isinstance(Q, (float, int)):
+            if penalize_a:  #effectively puts the penalty on a(t) with Q=I because a = C @ x
+                Q = Q * (C.T @ C) #[x,a]@[a,x]->[x,x]
+            else:
+                Q = Q * torch.eye(self.model.dim_x) #[x,x]
 
-        _, _, G = control.dare(A, B, Q_lqr, R_lqr) #TODO: should be computed for entire sequence A_t, B_t
+        if isinstance(R, (float, int)):
+            R = R * torch.eye(self.plant.dim_u) #[u,u]
+
+        _, _, G = control.dare(A, B, Q, R) #[x,x],[x,u],[x,x],[u,u]->[u,x]
         G = torch.tensor(G, dtype=torch.float32)
         return G
 
 
-    def compute_steady_state_control(self, x_hat_ss):
+    def compute_steady_state_control(self, x_ss, bias=0):
         """Compute steady-state control input"""
-        A, B, _ = self.get_model_matrices()
-        I = torch.eye(self.model.dim_x)
-        u_ss = torch.linalg.pinv(B) @ (I-A) @ x_hat_ss
-        return u_ss
+        A, B, _ = self.get_model_matrices() #[x,x],[x,u]
+        I = torch.eye(self.model.dim_x) #[x,x]
+        u_ss = torch.linalg.pinv(B) @ ((I-A)@x_ss.unsqueeze(-1) - bias) #[u,x] @ ([x,x]@[b,x,1] - [b,x,1]) -> [b,u,1]
+
+        assert (self.u_min <= u_ss).all() and (u_ss <= self.u_max).all(), 'Steady state control input outside of min/max bounds'
+        return u_ss.squeeze(-1) #[b,u]
 
 
-    @torch.no_grad()
-    def run_control(self, y_ss, x0=None, a0=None, Q=1, R=1, umin=None, umax=None, num_steps=100, t_ctrl_start=None, t_ctrl_stop=None):
-        # Set defaults
-        if t_ctrl_start is None:
-            t_ctrl_start = -1
-        if t_ctrl_stop is None:
-            t_ctrl_stop = float('inf')
+    def init_model(self, y0, num_steps, u_prior=None, ground_truth_latents=''):
+        """
+        y0: [b,y]
+        """
+        num_seqs = y0.shape[0]
 
-        if umin is not None and umax is not None:
-            assert umin < umax
+        self.x_hat = torch.full((num_seqs, num_steps, self.model.dim_x), torch.nan) #[b,t,x] dynamic latent via Kalman filter
+        self.a_hat = torch.full((num_seqs, num_steps, self.model.dim_a), torch.nan) #[b,t,a] manifold latent via encoder
+        self.a_hat_fwd = torch.full((num_seqs, num_steps, self.model.dim_a), torch.nan) #[b,t,a] manifold latent via C matrix
+        self.y_hat = torch.full((num_seqs, num_steps, self.model.dim_y), torch.nan) #[b,t,y] observation estimate via decoder
+        self.u     = torch.full((num_seqs, num_steps-1, self.plant.dim_u), torch.nan) #[b,t-1,u] control input (one step shorter because Tth input never used)
+
+        self.x_hat[:,0,:], self.a_hat[:,0,:] = self.estimate_latents(y0, u_prior, ground_truth_latents)
+        self.a_hat_fwd[:,0,:], self.y_hat[:,0,:] = self.verify_latents(self.x_hat[:,0,:])
+
+
+    def run_control(self, y_ss, plant_init={}, Q=1, R=1, num_steps=100, t_on=-1, t_off=float('inf'), ground_truth_latents='', controller=None):
+        """
+        inputs:
+            y_ss: [b,y], target
+            plant_init: {'var1':[b,z1], ..., 'varN':[b,zN]} for each dynamic plant variable z
+            ground_truth_latents: 'a', 'x', or 'ax' or ''. Only when plant is NonlinearStateSpaceModel
+        """
+
+        num_seqs = y_ss.shape[0]
 
         # Compute control constants
-        G = self.compute_lqr_gain(Q, R)
-        x_hat_ss, a_hat_ss = self.estimate_latents(y_ss)
-        u_ss = self.compute_steady_state_control(x_hat_ss)
+        bias = 0
+        u_prior = None
+        def step_plant(u): return self.plant.step(u=u)
+        def pad_input(u_seq):
+            """Assume input was zero for t<0, make u_seq=[u_{-1}, u_{0}, ..., u_{t}] with u_{-1}=0
+                input: [b,t,u]: u_{0}, ..., u_{t}
+                returns: [b,t+1,u]: u_{-1},u_{0}, ..., u_{t}"""
+            zero = torch.zeros_like(u_seq[:,0:1,:])
+            return torch.cat((zero, u_seq), dim=1)
 
-        # Logging
-        num_seqs = 1
-        x     = torch.full((num_seqs, num_steps, self.plant.dim_x), torch.nan) #plant dynamic latent
-        a     = torch.full((num_seqs, num_steps, self.plant.dim_a), torch.nan) #plant manifold latent (not used, just tracking for posterity)
-        y     = torch.full((num_seqs, num_steps, self.plant.dim_y), torch.nan) #observations
-        x_hat = torch.full((num_seqs, num_steps, self.model.dim_x), torch.nan) #Kalman filter estimate of dynamic latent (except at t=0, which is x_hat[0]=C_inv*f_enc(y))
-        a_hat = torch.full((num_seqs, num_steps, self.model.dim_a), torch.nan) #model manifold latent
-        u     = torch.full((num_seqs, num_steps, self.model.dim_u), torch.nan) #control input
+        if 'RNN' in self.plant.__class__.__name__: #if isinstance(self.plant, RNN): #u = [y_ss; u_lqr]
+            Bs, _ = self.model.ldm.B.split([self.plant.dim_s, self.plant.dim_u], dim=1)
+            bias = Bs @ y_ss.unsqueeze(-1) #[x,s] @ [b,s,1] -> [b,x,1]
+            u_prior = torch.cat((y_ss.unsqueeze(1), #[b,s]->[b,1,s]
+                                 torch.zeros(num_seqs,1,self.plant.dim_u)), #[b,1,u]
+                                dim=-1) #[b,1,s+u]
 
-        # Initial true and estimated states
-        x[:,0,:], a[:,0,:], y[:,0,:] = self.generate_observation(x=x0, a=a0) #x0 xor a0 must be None
-        x_hat[:,0,:], a_hat[:,0,:]   = self.estimate_latents(y[:,0,:])
+            def step_plant(u): self.plant.step(s=y_ss, u=u)
+
+            _pad_input = pad_input
+            def pad_input(u_seq): #make u = [y_ss; u_lqr]
+                u_seq = _pad_input(u_seq)
+                s_seq = y_ss.unsqueeze(1).expand(-1,u_seq.shape[1],-1) #[b,y]->[b,t,y]
+                u_seq = torch.cat((s_seq, u_seq), dim=-1) #[b,t,s+u]
+
+        x_hat_ss, a_hat_ss = self.estimate_latents(y_ss, steady_state=True) #cannot use ground_truth_latents here, not defined #[b,y]->[b,x],[b,a]
+        u_hat_ss = self.compute_steady_state_control(x_hat_ss, bias) #[b,x]->[b,u]
+        if controller is None:
+            G = self.compute_lqr_gain(Q, R) #[u,x]
+            controller = lambda x: (-G @ (x - x_hat_ss).unsqueeze(-1)).squeeze(-1) + u_hat_ss #[u,x] @ [b,x,1] + [b,u] -> [b,u]
+
+        # Initialization and logging
+        self.plant.init_state(**plant_init, num_steps=num_steps, num_seqs=num_seqs)
+        self.init_model(self.plant.y_seq[:,0,:].clone(), num_steps, u_prior=u_prior, ground_truth_latents=ground_truth_latents)
 
         # Run controller
         for t in range(num_steps-1):
             # Compute LQR control input
-            if t_ctrl_start <= t <= t_ctrl_stop:
-                u[:,t,:] = -G @ (x_hat[:,t,:].squeeze() - x_hat_ss) + u_ss
+            if t_on <= t <= t_off:
+                u_t = controller(self.x_hat[:,t,:].clone())
+                self.u[:,t,:] = torch.clip(u_t, min=self.u_min, max=self.u_max) #optional hard bounds
             else:
-                u[:,t,:] = 0
-
-            # Optional hard bounds on control inputs
-            if umin is not None or umax is not None:
-                u[:,t,:] = torch.clip(u[:,t,:], min=umin, max=umax)
+                self.u[:,t,:] = 0
 
             # Step dynamics of plant with control input
-            x[:,t+1,:], a[:,t+1,:], y[:,t+1,:] = self.plant.step(x[:,t,:].squeeze(), u[:,t,:].squeeze())
+            step_plant(self.u[:,t,:])
 
-            # Estimate model manifold latent state from observation
-            a_hat[:,t+1,:] = self.model.encoder(y[:,t+1,:])
+            # Estimate latents based on observation and input
+            y_seq = self.plant.y_seq[:,:t+2,:] #[b,t,y]: y_{0}, ... y_{t+1}
+            u_seq = pad_input(self.u[:, :t+1, :])
+            self.x_hat[:,t+1,:], self.a_hat[:,t+1,:] = self.estimate_latents(y_seq, u_seq, ground_truth_latents=ground_truth_latents)
 
-            # Estimate dynamic latent from history of manifold latents by Kalman filter
-            #TODO: do this recursively, try control.dlqe()
-            x_hat[:,t+1,:] = self.model.ldm(a=a_hat[:, 1:t+2, :], u=u[:, :t+1, :])[1][:,-1,:]
+        # Additional logging which observations correspond to the inferred latents
+        self.a_hat_fwd, self.y_hat = self.verify_latents(self.x_hat) #[b,t,a] manifold latent via C matrix; [b,t,y] observation estimate via decoder
+        a_hat_ss_fwd, y_hat_ss = self.verify_latents(x_hat_ss) #[b,x]->[b,a],[b,y]
 
-        return {'x':x, 'a':a, 'y':y, 'u':u,
-                'x_ss':None, 'a_ss':None, 'y_ss':y_ss, 'u_ss':u_ss,
-                'x_hat':x_hat, 'a_hat':a_hat,
-                'x_hat_ss':x_hat_ss, 'a_hat_ss':a_hat_ss,
-                't_ctrl_start':t_ctrl_start, 't_ctrl_stop':t_ctrl_stop,
+        return {'x_hat':self.x_hat,  'a_hat':self.a_hat,  'y_hat':self.y_hat, 'u':self.u, 'y':self.plant.y_seq,
+                'a_hat_fwd':self.a_hat_fwd, 'a_hat_ss_fwd':a_hat_ss_fwd,
+                'x_hat_ss':x_hat_ss, 'a_hat_ss':a_hat_ss, 'y_hat_ss':y_hat_ss, 'u_hat_ss':u_hat_ss, 'y_ss':y_ss,
+                't_on':t_on, 't_off':t_off,
                 'Q':Q, 'R':R}
 
 
     @staticmethod
-    def plot_all(x, a, y, u,
-                 x_ss, a_ss, y_ss, u_ss,
-                 x_hat, a_hat,
-                 x_hat_ss, a_hat_ss,
-                 t_ctrl_start=-1, t_ctrl_stop=float('inf'),
-                 Q=None, R=None):
+    def plot_all(x_hat,    a_hat,    y_hat,    u,        y,
+                 x_hat_ss, a_hat_ss, y_hat_ss, u_hat_ss, y_ss,
+                 a_hat_fwd, a_hat_ss_fwd,
+                 x_ss=None, a_ss=None, u_ss=None, x=None, a=None, #only when plant is NonlinearStateSpaceModel
+                 t_on=-1, t_off=float('inf'),
+                 Q=None, R=None,
+                 seq_num=0, max_plot_rows=7):
 
-        num_seqs, num_steps, dim_x = x.shape #num_seqs==1 for now
-        dim_a = a_ss.shape[0]
-        dim_y = y_ss.shape[0]
-        dim_u = u_ss.shape[0]
-        n_ax_rows = max(dim_x, dim_a, dim_y, dim_u)
+        var_names = ['x', 'a', 'u', 'y']
+        var_names_long = ['Dynamic latents', 'Manifold latents', 'Control inputs', 'Observations']
 
-        fig, ax = plt.subplots(n_ax_rows,4, sharex=True, figsize=(15,6))
-        for i in range(n_ax_rows):
-            if i < dim_x:
-                ax[i,0].axhline(x_ss[i],      c='tab:blue',            label='$x_{ss}$ target (true)')
-                ax[i,0].plot(   x[0,:,i],     c='tab:orange',          label='$x(t)$ plant')
-                ax[i,0].axhline(x_hat_ss[i],  c='tab:blue',   ls='--', label='$\\widehat{x}_{ss}$ target (est)')
-                ax[i,0].plot(   x_hat[0,:,i], c='tab:orange', ls='--', label='$\\widehat{x}(t)$ estimate (KF)')
-                ax[i,0].set_ylabel(f'$x_{i+1}(t)$')
-            # else:
-            #     ax[i,0].axis('off')
+        max_dim = max([var.shape[-1] for var in (x_hat, a_hat, y_hat, u)])
+        nrows = min(max_plot_rows, max_dim)
+        fig, axs = plt.subplots(nrows, 4, sharex=True, sharey=False, figsize=(13, 1.6*nrows+1))
 
-            if i < dim_a:
-                ax[i,1].axhline(a_ss[i],      c='tab:blue',            label='${a}_{ss}$ target (true)')
-                ax[i,1].plot(   a[0,:,i],     c='tab:orange',          label='$a(t)$ plant')
-                ax[i,1].axhline(a_hat_ss[i],  c='tab:blue',   ls='--', label='$\\widehat{a}_{ss}$ target (est)')
-                ax[i,1].plot(   a_hat[0,:,i], c='tab:orange', ls='--', label='$\\widehat{a}(t)$ estimate ($f_{enc})$')
-                ax[i,1].set_ylabel(f'$a_{i+1}(t)$')
-            # else:
-            #     ax[i,1].axis('off')
+        def plot(seq, target, varname, color, label):
+            B,T,N = seq.shape
+            ax_num = var_names.index(varname)
+            ax = np.expand_dims(axs[:N, ax_num], axis=1)
+            plot_vs_time(seq[seq_num], target[seq_num], varname=varname, t_on=t_on, t_off=t_off,
+                         ax=ax, max_N=nrows, legend=True, color=color, label=label)
+            for a in axs[N:,ax_num]:
+                a.axis('off')
+            axs[0,ax_num].set_title(var_names_long[ax_num])
+            return ax
 
-            if i < dim_u:
-                ax[i,2].axhline(u_ss[i],  c='tab:blue',   label='$u_{ss}$ steady state')
-                ax[i,2].plot(u[0,:,i],    c='tab:orange', label='$u(t)$ control input')
-                ax[i,2].set_ylabel(f'$u_{i+1}((t)$')
-            # else:
-            #     ax[i,2].axis('off')
+        #inferred vars
+        plot(x_hat, x_hat_ss, 'x', color='tab:blue', label='$\widehat{x}$')
+        plot(a_hat, a_hat_ss, 'a', color='tab:blue', label='$\widehat{a}$')
+        plot(u,     u_hat_ss, 'u', color='tab:blue', label='$u$')
 
-            if i < dim_y:
-                ax[i,3].axhline(y_ss[i],  c='tab:blue',   label='$y_{ss}$ target')
-                ax[i,3].plot(   y[0,:,i], c='tab:orange', label='$y(t)$ plant')
-                ax[i,3].set_ylabel(f'$y_{i+1}(t)$')
-            # else:
-            #     ax[i,3].axis('off')
+        #decoded vars
+        plot(y_hat, y_hat_ss, 'y', color='tab:green', label='$\widehat{y}$')
+        plot(a_hat_fwd, a_hat_ss_fwd, 'a', color='tab:green', label='$\widetilde{a}$')
 
-        for j,d in enumerate([dim_x, dim_a, dim_u, dim_y]):
-            ax[0,j].legend()
-            ax[-1,j].set_xlabel('Time')
-
-        ax[0,0].set_title('Dynamic latents')
-        ax[0,1].set_title('Manifold latents')
-        ax[0,2].set_title('Control inputs')
-        ax[0,3].set_title('Observations')
-
-        for axis in ax.flatten():
-            if axis not in ax[-1, :3]:
-                if t_ctrl_start > 0:
-                    axis.axvline(t_ctrl_start, color='k', ls='--')
-                if t_ctrl_stop < num_steps:
-                    axis.axvline(t_ctrl_stop,  color='k', ls='--')
-
-        if Q is not None and R is not None:
-            Q_str = '' if Q==1 else f'{Q}\\times '
-            R_str = '' if R==1 else f'{R}\\times '
-            fig.suptitle(f"$Q={Q_str}C^TC; R={R_str}I$")
+        #plant vars
+        plot(y,     y_ss,     'y', color='tab:orange', label='$y$')
+        if u_ss is not None:
+            _u = torch.full_like(u, float('nan'))
+            plot(_u, u_ss, 'u', color='tab:orange', label=None)
+        if a is not None or a_ss is not None:
+            a = torch.full_like(a_hat, float('nan')) if a is None else a
+            a_ss = torch.full_like(a_hat_ss, float('nan')) if a_ss is None else a_ss
+            plot(a, a_ss, 'a', color='tab:orange', label='$a$')
+        if x is not None or x_ss is not None:
+            x = torch.full_like(x_hat, float('nan')) if x is None else x
+            x_ss = torch.full_like(x_hat_ss, float('nan')) if x_ss is None else x_ss
+            plot(x, x_ss, 'x', color='tab:orange', label='$x$')
 
         fig.tight_layout()
-        return fig, ax
+        return fig, axs
