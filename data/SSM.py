@@ -42,10 +42,9 @@ class NonlinearStateSpaceModel():
             verify_shape(S, [self.dim_y, self.dim_y])
             self.S_distr = MultivariateNormal(torch.zeros(self.dim_y), S) #[y,y]
 
-        #logging, initialized in init_state()
-        self.x_seq = None
-        self.a_seq = None
-        self.y_seq = None
+        #logging and state, initialized in init_state()
+        self.x_seq = self.a_seq = self.y_seq = None
+        self.x = self.a = self.y = self.t = None
 
 
     @staticmethod
@@ -76,7 +75,7 @@ class NonlinearStateSpaceModel():
                 f'S={self.S_distr.covariance_matrix.numpy() if self.S_distr is not None else 0}\n')
 
 
-    def step_dynamic_latent(self, x, u=None, noise=True):
+    def next_dynamic_latent(self, x, u=None, noise=True):
         """
         inputs:
             x: [b,x]
@@ -118,49 +117,57 @@ class NonlinearStateSpaceModel():
         return y
 
 
-    def step(self, x, u=None, noise=True):
+    def _update_state(self, u, noise=True):
+        self.x = self.next_dynamic_latent(self.x, u, noise=noise)
+        self.a = self.compute_manifold_latent(self.x, noise=noise)
+        self.y = self.compute_observation(self.a, noise=noise)
+        return self.x, self.a, self.y
+
+
+    def _log_state(self):
+        self.t += 1
+        self.x_seq[:, self.t, :] = self.x
+        self.a_seq[:, self.t, :] = self.a
+        self.y_seq[:, self.t ,:] = self.y
+
+
+    def step(self, u=None, noise=True):
         """
         inputs:
-            x: [b,x]
             u: [b,u]
+            noise: bool
         returns:
             x_next: [b,x]
             a_next: [b,a]
             y_next: [b,y]
         """
-        x_next = self.step_dynamic_latent(x, u, noise)
-        a_next = self.compute_manifold_latent(x_next, noise)
-        y_next = self.compute_observation(a_next, noise)
-        return x_next, a_next, y_next
+        next_state = self._update_state(u, noise=noise)
+        self._log_state()
+        return next_state
 
 
     def init_state(self, x0=None, u_seq=None, num_seqs=None, num_steps=None):
+        #extract/validate dimensions
         num_seqs, dim_x = verify_shape(x0, [num_seqs, self.dim_x])
         num_seqs, num_steps, dim_u = verify_shape(u_seq, [num_seqs, num_steps, self.dim_u])
 
+        #set defaults if needed
         x0    = x0    if x0    is not None else torch.zeros(num_seqs, self.dim_x)
         u_seq = u_seq if u_seq is not None else torch.zeros(num_seqs, num_steps, self.dim_u)
 
-        #initialize logging
+        #allocate memory for logging
         self.x_seq = torch.full((num_seqs, num_steps, self.dim_x), torch.nan) #[b,t,x]
         self.a_seq = torch.full((num_seqs, num_steps, self.dim_a), torch.nan) #[b,t,a]
         self.y_seq = torch.full((num_seqs, num_steps, self.dim_y), torch.nan) #[b,t,y]
 
-        self.x_seq[:,0,:] = x0
-        self.a_seq[:,0,:] = self.compute_manifold_latent(self.x_seq[:,0,:])
-        self.y_seq[:,0,:] = self.compute_observation(self.a_seq[:,0,:])
+        #initialize state
+        self.t = -1
+        self.x = x0
+        self.a = self.compute_manifold_latent(self.x, noise=False)
+        self.y = self.compute_observation(self.a, noise=False)
+        self._log_state()
 
         return x0, u_seq, num_seqs, num_steps
-
-
-    def get_state(self, t):
-        return self.x_seq[:,t,:]
-
-
-    def set_state(self, x,a,y, t):
-        self.x_seq[:,t,:] = x
-        self.a_seq[:,t,:] = a
-        self.y_seq[:,t,:] = y
 
 
     def __call__(self, x0=None, u_seq=None, num_seqs=None, num_steps=None):
@@ -175,7 +182,7 @@ class NonlinearStateSpaceModel():
         """
         x0, u_seq, num_seqs, num_steps = self.init_state(x0, u_seq, num_seqs, num_steps)
         for t in range(1, num_steps):
-            self.x_seq[:,t,:] = self.step_dynamic_latent(self.x_seq[:,t-1,:], u_seq[:,t-1,:])
+            self.x_seq[:,t,:] = self.next_dynamic_latent(self.x_seq[:,t-1,:], u_seq[:,t-1,:])
         self.a_seq = self.compute_manifold_latent(self.x_seq)
         self.y_seq = self.compute_observation(self.a_seq)
         return self.x_seq, self.a_seq, self.y_seq
