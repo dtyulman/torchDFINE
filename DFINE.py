@@ -7,6 +7,7 @@ Shanechi Lab, University of Southern California
 
 from modules.LDM import LDM
 from modules.MLP import MLP
+from modules.Autoencoder import Autoencoder
 from nn import get_kernel_initializer_function, compute_mse, get_activation_function
 
 import torch
@@ -82,15 +83,25 @@ class DFINE(nn.Module):
             self.encoder = self.decoder = lambda x: x
         else:
             # Initialize the autoencoder
-            self.encoder = self._get_MLP(input_dim=self.dim_y,
-                                         output_dim=self.dim_a,
-                                         layer_list=self.config.model.hidden_layer_list,
-                                         activation_str=self.config.model.activation)
+            # TO DO: Get rid of this if Autoencoder is working properly
+            # self.encoder = self._get_MLP(input_dim=self.dim_y,
+            #                              output_dim=self.dim_a,
+            #                              layer_list=self.config.model.hidden_layer_list,
+            #                              activation_str=self.config.model.activation)
 
-            self.decoder = self._get_MLP(input_dim=self.dim_a,
-                                         output_dim=self.dim_y,
-                                         layer_list=self.config.model.hidden_layer_list[::-1],
-                                         activation_str=self.config.model.activation)
+            # self.decoder = self._get_MLP(input_dim=self.dim_a,
+            #                              output_dim=self.dim_y,
+            #                              layer_list=self.config.model.hidden_layer_list[::-1],
+            #                              activation_str=self.config.model.activation)
+
+            self.autoencoder = Autoencoder(dim_y=self.dim_y,
+                                           dim_a=self.dim_a,
+                                           layer_list=self.config.model.hidden_layer_list,
+                                           activation_str=self.config.model.activation,
+                                           nn_kernel_initializer=self.config.model.nn_kernel_initializer)
+            
+            self.encoder = self.autoencoder.encoder
+            self.decoder = self.autoencoder.decoder
 
         # If asked to train supervised model, get behavior mapper
         if self.config.model.supervise_behv:
