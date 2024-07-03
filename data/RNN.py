@@ -32,7 +32,8 @@ class RNN(nn.Module):
         self.Bs = nn.Parameter(torch.empty(dim_x, dim_s))
 
         self.dim_u = dim_u
-        self.Bu = torch.eye(dim_x, dim_u) #control input matrix B is fixed
+        # self.Bu = torch.eye(dim_x, dim_u) #control input matrix B is fixed
+        self.Bu = torch.randn(dim_x, dim_u) #control input matrix B is fixed
 
         #dynamics parameters
         self.dim_x = dim_x

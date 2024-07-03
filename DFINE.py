@@ -94,14 +94,14 @@ class DFINE(nn.Module):
             #                              layer_list=self.config.model.hidden_layer_list[::-1],
             #                              activation_str=self.config.model.activation)
 
-            self.autoencoder = Autoencoder(dim_y=self.dim_y,
+            autoencoder = Autoencoder(dim_y=self.dim_y,
                                            dim_a=self.dim_a,
                                            layer_list=self.config.model.hidden_layer_list,
                                            activation_str=self.config.model.activation,
                                            nn_kernel_initializer=self.config.model.nn_kernel_initializer)
             
-            self.encoder = self.autoencoder.encoder
-            self.decoder = self.autoencoder.decoder
+            self.encoder = autoencoder.encoder
+            self.decoder = autoencoder.decoder
 
         # If asked to train supervised model, get behavior mapper
         if self.config.model.supervise_behv:
