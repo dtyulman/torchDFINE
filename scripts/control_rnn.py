@@ -88,8 +88,8 @@ dim_u = dim_x
 
 #%% Network
 # torch.manual_seed(1)
-load_rnn = False
-# load_rnn = '/Users/dtyulman/Drive/dfine_ctrl/torchDFINE/data/RNN_x=32_s=2_u=32_y=2.pt'
+# load_rnn = False
+load_rnn = '/Users/dtyulman/Drive/dfine_ctrl/torchDFINE/data/RNN_x=32_s=2_u=32_y=2.pt'
 
 if load_rnn:
     # Load trained and perturbed RNNs
@@ -192,14 +192,14 @@ elif train_dfine_on == 'both':
 
 
 #%% Train DFINE
-load_model = False
+# load_model = False
 
 #x=4, a=2, u=32
 # load_model = '/Users/dtyulman/Drive/dfine_ctrl/torchDFINE/results/train_logs/2024-06-02/192737_rnn_u=-0.5_0.5_2'
 # load_model = '/Users/dtyulman/Drive/dfine_ctrl/torchDFINE/results/train_logs/2024-06-02/160052_rnn_u=-0.5_0.5_2'
 
 #x=a=2, u=32
-# load_model ='/Users/dtyulman/Drive/dfine_ctrl/torchDFINE/results/train_logs/2024-06-05/131824_rnn_u=-0.5_0.5_2'
+load_model ='/Users/dtyulman/Drive/dfine_ctrl/torchDFINE/results/train_logs/2024-06-05/131824_rnn_u=-0.5_0.5_2'
 
 #model parameters
 reload(config_dfine) #ensures timestamp in get_default_config().model.savedir is current
@@ -246,7 +246,7 @@ else:
     y_ss = targets
 
 controller = LQGController(plant=perturbed_rnn, model=model)
-outputs = controller.run_control(y_ss=y_ss, R=2, num_steps=50)
+outputs = controller.run_control(y_ss=y_ss, R=0.01, num_steps=200)
 
 est_targets = outputs['y_hat_ss']
 estimated_y_seq = outputs['y_hat']
@@ -369,8 +369,8 @@ for i,y_ss in  enumerate(targets):
     #trick the controller into thinking that this SSM is an RNN
     plant.__class__.__name__ = plant.__class__.__name__ + 'RNN'
     plant.dim_s = dim_s
-    def step(self, x, s=None, u=None):
-        return NonlinearStateSpaceModel.step(self, x, u)
+    def step(self, s=None, u=None):
+        return NonlinearStateSpaceModel.step(self, u)
     plant.step = types.MethodType(step, plant)
 
     #run control

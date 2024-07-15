@@ -1,13 +1,11 @@
 import math
-from copy import deepcopy
 
 import torch
 from torch import nn
-from torch.utils.data import Dataset
 
 from python_utils import verify_shape
 
-#%%
+
 class RNN(nn.Module):
     #https://www.proquest.com/docview/2668441219
     """
@@ -54,7 +52,10 @@ class RNN(nn.Module):
             self.by = nn.Parameter(torch.empty(dim_y, 1))
 
         self._init_params()
-        self.t = self.x = self.y = None
+
+        #logging and state, initialized in init_state()
+        self.x_seq = self.y_seq = None
+        self.x = self.y = self.t = None
 
 
     def _init_params(self):
@@ -93,14 +94,6 @@ class RNN(nn.Module):
 
 
     def _update_state(self, s, u):
-        """
-        inputs:
-            s: [b,s], task instruction input
-            u: [b,u], control input
-        returns:
-            x_next: [b,x]
-            y_next: [b,y]
-        """
         self.x = self.compute_next_neurons(self.x, s, u)
         self.y = self.compute_observation(self.x)
         return self.x, self.y
@@ -133,13 +126,21 @@ class RNN(nn.Module):
         #initialize state
         self.t = -1
         self.x = x0
-        self.y = self.compute_observation(x0)
+        self.y = self.compute_observation(self.x)
         RNN._log_state(self)
 
         return x0, s_seq, u_seq, num_seqs, num_steps
 
 
     def step(self, s=None, u=None):
+        """
+        inputs:
+            s: [b,s], task instruction input
+            u: [b,u], control input
+        returns:
+            x_next: [b,x]
+            y_next: [b,y]
+        """
         next_state = self._update_state(s, u)
         self._log_state()
         return next_state
