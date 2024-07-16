@@ -47,7 +47,9 @@ _config.model.hidden_layer_list_mapper = [20,20,20] # Hidden layer list for the 
 _config.model.activation_mapper = 'tanh' # Activation function used in mapper layers
 _config.model.which_behv_dims = [0,1,2,3] # List of dimensions of behavior data to be decoded by mapper, check for any dimensionality mismatch
 _config.model.behv_from_smooth = True # Boolean for whether to decode behavior from a_smooth
-_config.model.save_dir = os.path.join(os.getcwd(), 'results', 'train_logs', date.today().isoformat(), datetime.now().strftime('%H%M%S')) # Main save directory for DFINE results, plots and checkpoints
+# _config.model.save_dir = os.path.join(os.getcwd(), 'results', 'train_logs', date.today().isoformat(), datetime.now().strftime('%H%M%S')) # Main save directory for DFINE results, plots and checkpoints
+_config.model.save_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'results', 'train_logs', date.today().isoformat(), datetime.now().strftime('%H%M%S')) # Main save directory for DFINE results, plots and checkpoints
+
 _config.model.save_steps = 10 # Number of steps to save DFINE checkpoints
 
 # loss

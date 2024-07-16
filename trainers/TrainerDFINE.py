@@ -251,6 +251,7 @@ class TrainerDFINE(BaseTrainer):
         # Create and save plots from the last batch
         if epoch % self.config.train.plot_save_steps == 0 or epoch == 1 or epoch == self.config.train.num_epochs:
             self.create_plots(y_batch=y_batch,
+                              u_batch = u_batch,
                               behv_batch=behv_batch,
                               model_vars=model_vars,
                               epoch=epoch,
@@ -283,7 +284,7 @@ class TrainerDFINE(BaseTrainer):
             self._reset_metrics(train_valid='valid')
 
             # Start iterating over the batches
-            y_all, mask_all = [], []
+            y_all, mask_all, u_all = [], [], []
             with tqdm(valid_loader, unit='batch') as tepoch:
                 for _, batch in enumerate(tepoch):
                     tepoch.set_description(f"Epoch {epoch}, VALID")
@@ -293,9 +294,10 @@ class TrainerDFINE(BaseTrainer):
                     y_batch, u_batch, behv_batch, mask_batch = batch
                     y_all.append(y_batch)
                     mask_all.append(mask_batch)
+                    u_all.append(u_batch)
 
                     # Perform forward pass and compute loss
-                    model_vars = self.dfine(y=y_batch, mask=mask_batch)
+                    model_vars = self.dfine(y=y_batch, u=u_batch, mask=mask_batch)
                     _, loss_dict = self.dfine.compute_loss(y=y_batch,
                                                            u=u_batch,
                                                            model_vars=model_vars,
@@ -311,7 +313,8 @@ class TrainerDFINE(BaseTrainer):
             # Perform one-step-ahead prediction on the provided validation data, for evaluation
             y_all = torch.cat(y_all, dim=0)
             mask_all =  torch.cat(mask_all, dim=0)
-            model_vars_all = self.dfine(y=y_all, mask=mask_all)
+            u_all =  torch.cat(u_all, dim=0)
+            model_vars_all = self.dfine(y=y_all, u=u_all, mask=mask_all)
             y_pred_all = model_vars_all['y_pred']
             _, one_step_ahead_nrmse = get_nrmse_error(y_all[:, 1:, :], y_pred_all)
             self.training_valid_one_step_nrmses.append(one_step_ahead_nrmse)
@@ -338,6 +341,7 @@ class TrainerDFINE(BaseTrainer):
             # Create and save plots from last batch
             if epoch % self.config.train.plot_save_steps == 0 or epoch == 1 or epoch == self.config.train.num_epochs:
                 self.create_plots(y_batch=y_batch,
+                                  u_batch=u_batch,
                                 behv_batch=behv_batch,
                                 model_vars=model_vars,
                                 epoch=epoch,
@@ -376,7 +380,7 @@ class TrainerDFINE(BaseTrainer):
                 self.valid_epoch(epoch, valid_loader)
 
 
-    def create_plots(self, y_batch, model_vars, behv_batch=None, mask_batch=None, epoch=1, trial_num=0, prefix='train'):
+    def create_plots(self, y_batch, u_batch, model_vars, behv_batch=None, mask_batch=None, epoch=1, trial_num=0, prefix='train'):
         '''
         Creates training/validation plots of neural reconstruction, manifold latent factors and dynamic latent factors
 
@@ -400,7 +404,7 @@ class TrainerDFINE(BaseTrainer):
         self.create_y_plot(y_batch=y_batch, y_hat_batch=model_vars['y_smooth'], mask_batch=mask_batch, epoch=epoch, trial_num=trial_num, prefix=f'{prefix}', feat_name='y_smooth')
 
         # Generate and save smoothed manifold latent factor plot
-        self.create_k_step_ahead_plot(y_batch=y_batch, model_vars=model_vars, mask_batch=mask_batch, epoch=epoch, trial_num=trial_num, prefix=prefix)
+        self.create_k_step_ahead_plot(y_batch=y_batch, u_batch=u_batch, model_vars=model_vars, mask_batch=mask_batch, epoch=epoch, trial_num=trial_num, prefix=prefix)
 
         # Generate and save projected (encoder output directly) manifold latent factor plot
         self.create_latent_factor_plot(f=model_vars['a_hat'], epoch=epoch, trial_num=trial_num, prefix=prefix, feat_name='a_hat')
@@ -501,7 +505,7 @@ class TrainerDFINE(BaseTrainer):
         plt.close('all')
 
 
-    def create_k_step_ahead_plot(self, y_batch, model_vars, mask_batch=None, epoch=1, trial_num=0, prefix='train'):
+    def create_k_step_ahead_plot(self, y_batch, u_batch, model_vars, mask_batch=None, epoch=1, trial_num=0, prefix='train'):
         '''
         Creates true and k-step ahead predicted neural observation plots during training and validation
 
@@ -530,7 +534,7 @@ class TrainerDFINE(BaseTrainer):
         # Start iterating over steps ahead for plotting
         for k in self.config.loss.steps_ahead:
             # Get the k-step ahead prediction
-            y_pred_k_batch, _, _ = self.dfine.get_k_step_ahead_prediction(model_vars, k)
+            y_pred_k_batch, _, _ = self.dfine.get_k_step_ahead_prediction(model_vars, k, u=u_batch)
 
             # Detach tensors for plotting and take timesteps from k to T (since we're plotting k-step ahead predictions)
             y_batch_k = y_batch[:, k:, ...].detach().cpu()
