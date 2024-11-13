@@ -23,11 +23,10 @@ _config.seed = int(torch.randint(low=0, high=100000, size=(1,)))
 
 # model
 _config.model = CN()
-_config.model.no_manifold = False # Remove the nonlinear manifold autoencoder, reducing the model to a pure LDM
-_config.model.hidden_layer_list = None if _config.model.no_manifold else [32,32,32] # Hidden layer list where each element is the number of neurons for that hidden layer of DFINE encoder/decoder. Please use [20,20,20,20] for nonlinear manifold simulations.
-_config.model.activation = None if _config.model.no_manifold else 'tanh' # Activation function used in encoder and decoder layers
+_config.model.hidden_layer_list = [32,32,32] # Hidden layer list where each element is the number of neurons for that hidden layer of DFINE encoder/decoder. Please use [20,20,20,20] for nonlinear manifold simulations. Set to None to remove the manifold, reducing the model to a pure LDM
+_config.model.activation = None if _config.model.hidden_layer_list is None else 'tanh' # Activation function used in encoder and decoder layers
 _config.model.dim_y = 30 # Dimensionality of neural observations
-_config.model.dim_a = _config.model.dim_y if _config.model.no_manifold else 16 # Dimensionality of manifold latent factor, a choice higher than dim_y (above) may lead to overfitting
+_config.model.dim_a = _config.model.dim_y if _config.model.hidden_layer_list is None else 16 # Dimensionality of manifold latent factor, a choice higher than dim_y (above) may lead to overfitting
 _config.model.dim_x = 16 # Dimensionality of dynamic latent factor, it's recommended to set it same as dim_a (above), please see Extended Data Fig. 8
 _config.model.dim_u = 1 # Dimensionality of control input
 _config.model.init_A_scale = 1 # Initialization scale of LDM state transition matrix
@@ -53,6 +52,7 @@ _config.model.save_steps = 10 # Number of steps to save DFINE checkpoints
 # loss
 _config.loss = CN()
 _config.loss.scale_l2 = 2e-3 # L2 regularization loss scale (we recommend a grid-search for the best value, i.e., a grid of [1e-4, 5e-4, 1e-3, 2e-3]). Please use 0 for nonlinear manifold simulations as it leads to a better performance.
+_config.loss.scale_spectr_reg_B = 0.1
 _config.loss.steps_ahead = [1,2,3,4] # List of number of steps ahead for which DFINE is optimized. For unsupervised and supervised versions, default values are [1,2,3,4] and [1,2], respectively.
 _config.loss.scale_behv_recons = 20 # If _config.model.supervise_behv is True, scale for MSE of behavior reconstruction (We recommend a grid-search for the best value. It should be set to a large value).
 _config.loss.scale_forward_pred = 0 # Loss scale for forward prediction loss (output is predicted solely from the input)
@@ -104,6 +104,20 @@ def get_default_config():
     '''
 
     return _config.clone()
+
+
+def get_LDM_config(dim_x, dim_a, dim_u):
+    """
+    Gets default config that reduces DFINE to an LDM by removing the autoencoder
+    """
+    ldm_config = get_default_config()
+    ldm_config.model.dim_x = dim_x
+    ldm_config.model.dim_u = dim_u
+    ldm_config.model.dim_a = dim_a
+    ldm_config.model.dim_y = ldm_config.model.dim_a
+    ldm_config.model.hidden_layer_list = None
+    ldm_config.model.activation = None
+    return ldm_config
 
 
 def update_config(config, new_config):

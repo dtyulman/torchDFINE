@@ -13,18 +13,18 @@ from nn import compute_mse
 
 def get_nrmse_error(y, y_hat, version_calculation='modified'):
     '''
-    Computes normalized root-mean-squared error between two 3D tensors. Note that this operation is not symmetric. 
+    Computes normalized root-mean-squared error between two 3D tensors. Note that this operation is not symmetric.
 
-    Parameters: 
+    Parameters:
     ------------
     - y: torch.Tensor/np.ndarray, shape: (num_seq, num_steps, dim_y), Tensor with true observations
     - y_hat: torch.Tensor/np.ndarray, shape: (num_seq, num_steps, dim_y), Tensor with reconstructed/estimated observations
-    - version_calculation: str, Version to calculate the variance. If 'regular', variance of each sequence is computed separately, 
+    - version_calculation: str, Version to calculate the variance. If 'regular', variance of each sequence is computed separately,
                                 which may result in unstable nrmse value since some sequences may be constant or close to being constant and
-                                results in ~0 variance, so high/unreasonable nrmse. To prevent that, variance is computed across flattened sequence in 
+                                results in ~0 variance, so high/unreasonable nrmse. To prevent that, variance is computed across flattened sequence in
                                 'modified' mode. 'modified' by default.
 
-    Returns: 
+    Returns:
     ------------
     - normalized_error: torch.Tensor, shape: (dim_y,), Normalized root-mean-squared error for each data dimension
     - normalized_error_mean: torch.Tensor, shape: (), Average normalized root-mean-squared error for each data dimension
@@ -36,7 +36,7 @@ def get_nrmse_error(y, y_hat, version_calculation='modified'):
 
     y = convert_to_tensor(y).detach().cpu()
     y_hat = convert_to_tensor(y_hat).detach().cpu()
-    
+
     # carry time to first dimension
     y = torch.permute(y, (1,0,2)) # (num_steps, num_seq, dim_x)
     y_hat = torch.permute(y_hat, (1,0,2)) # (num_steps, num_seq, dim_x)
@@ -52,22 +52,22 @@ def get_nrmse_error(y, y_hat, version_calculation='modified'):
         y_resh = torch.reshape(y, (-1, y.shape[2]))
         var_y = torch.mean(torch.square(y_resh - torch.mean(y_resh, dim=0)), dim=0)
         var_y = torch.tile(var_y.unsqueeze(dim=0), (y.shape[1], 1))
-    normalized_error = torch.mean((torch.sqrt(recons_error) / torch.sqrt(var_y)), dim=0) # mean across batches 
+    normalized_error = torch.mean((torch.sqrt(recons_error) / torch.sqrt(var_y)), dim=0) # mean across batches
     normalized_error_mean = torch.mean(normalized_error)
 
     return normalized_error, normalized_error_mean
 
 
-def get_rmse_error(y, y_hat):    
+def get_rmse_error(y, y_hat):
     '''
     Computes root-mean-squared error between two 3D tensors
-    
-    Parameters: 
+
+    Parameters:
     ------------
     - y: torch.Tensor/np.ndarray, shape: (num_seq, num_steps, dim_y), Tensor with true observations
     - y_hat: torch.Tensor/np.ndarray, shape: (num_seq, num_steps, dim_y), Tensor with reconstructed/estimated observations
 
-    Returns: 
+    Returns:
     ------------
     - rmse: torch.Tensor, shape: (dim_y,), Root-mean-squared error for each data dimension
     - rmse_mean: torch.Tensor, shape: (), Average root-mean-squared error for each data dimension
@@ -89,16 +89,16 @@ def get_rmse_error(y, y_hat):
     return rmse, rmse_mean
 
 
-def get_pearson_cc(y, y_hat):     
+def get_pearson_cc(y, y_hat):
     '''
      Computes Pearson correlation coefficient across two 2D (If 3D tensors are given, they're reshaped across 1st and 2nd dimensions) tensors across first (time) dimension.
 
-     Parameters: 
+     Parameters:
      ------------
      - y: torch.Tensor/np.ndarray, shape: (num_seq, num_steps, dim_y) or (num_steps, dim_y), Tensor with true observations
      - y_hat: torch.Tensor/np.ndarray, shape: (num_seq, num_steps, dim_y) or (num_steps, dim_y), Tensor with reconstructed/estimated observations
 
-     Returns: 
+     Returns:
      ------------
      - ccs: torch.Tensor, shape: (dim_y,), Pearson correlation coefficients computed across first (time) dimension
      - ccs_mean: torch.Tensor, shape: (), Pearson correlation coefficients computed across first (time) dimension and averaged across data dimensions
@@ -129,21 +129,21 @@ def z_score_tensor(y, fit=True, **kwargs):
     '''
     Performs z-scoring fitting and transformation.
 
-    Parameters: 
+    Parameters:
     ------------
-    - y: torch.Tensor/np.ndarray, shape: (num_seq, num_steps, dim_y) or (num_steps, dim_y), Tensor/array to z-score 
+    - y: torch.Tensor/np.ndarray, shape: (num_seq, num_steps, dim_y) or (num_steps, dim_y), Tensor/array to z-score
                                                                                            (and if fit is True, to learn mean and standard deviation)
-    - fit: bool, Whether to learn mean and standard deviation from y. If False, learnt 'mean' and 'std' should be provided as keyword arguments. 
-    - mean: torch.Tensor, shape: (), Mean to transform y. If fit is True, it's not necessary to provide since mean is going to be learnt. 0 by default.  
-    - std: torch.Tensor, shape: (), Standard deviation to transform y. If fit is True, it's not necessary to provide since std is going to be learnt. 1 by default.  
+    - fit: bool, Whether to learn mean and standard deviation from y. If False, learnt 'mean' and 'std' should be provided as keyword arguments.
+    - mean: torch.Tensor, shape: (), Mean to transform y. If fit is True, it's not necessary to provide since mean is going to be learnt. 0 by default.
+    - std: torch.Tensor, shape: (), Standard deviation to transform y. If fit is True, it's not necessary to provide since std is going to be learnt. 1 by default.
 
-    Returns: 
+    Returns:
     ------------
     y_z_scored: torch.Tensor/np.ndarray, shape: (num_seq, num_steps, dim_y) or (num_steps, dim_y), Z-scored tensor/array
     mean: torch.Tensor, shape: (), Learnt mean. If fit is True, it's the mean provided via keyword, or default
-    mean: torch.Tensor/np.ndarray, Learnt standard deviation. If fit is True, it's the std provided via keyword, or default
+    std: torch.Tensor/np.ndarray, Learnt standard deviation. If fit is True, it's the std provided via keyword, or default
     '''
-    
+
     # Make sure that gradients are turned off
     with torch.no_grad():
         y = convert_to_tensor(y)
@@ -154,16 +154,18 @@ def z_score_tensor(y, fit=True, **kwargs):
             std = torch.std(y_resh, dim=0)
         else:
             mean = kwargs.pop('mean', 0)
-            std = kwargs.pop('std', 1)  
+            std = kwargs.pop('std', 1)
 
         # to prevent nan values
         std[std==0] = 1
-        
+
         y_resh = (y_resh - mean) / std
         y_z_scored = y_resh.reshape(y.shape)
-        return y_z_scored, mean, std  
+        return y_z_scored, mean, std
 
-def mse_from_encoding_dict(encoding_dict,steps_ahead):
+
+
+def mse_from_encoding_dict(encoding_dict, steps_ahead):
     dim_y = encoding_dict['batch_inference']['y']['train'].shape[-1]
     mse_dict = dict()
     cc_dict = dict()
@@ -176,5 +178,14 @@ def mse_from_encoding_dict(encoding_dict,steps_ahead):
         cc_k = get_pearson_cc(y=encoding_dict['batch_inference']['y']['train'][:, k:, :].reshape(-1, dim_y).cpu(),
                             y_hat=encoding_dict['batch_inference'][y_key]['train'].reshape(-1, dim_y).cpu())[1]
         cc_dict[y_key] = cc_k
-        
+
     return mse_dict, cc_dict
+
+
+
+def generate_input_noise(dim_u, num_steps, num_seqs=1, lo=-1, hi=1, levels=2):
+    if levels == 'inf':
+        u = (hi-lo) * torch.rand(num_seqs, num_steps, dim_u) + lo
+    else:
+        u = (hi-lo)/(levels-1) * torch.randint(levels, (num_seqs, num_steps, dim_u)) + lo
+    return u

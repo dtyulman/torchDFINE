@@ -52,23 +52,23 @@ class LDM(nn.Module):
         self.fit_D_matrix = kwargs.pop('fit_D_matrix', False)
 
         # Get initial values for LDM parameters
-        self.A = kwargs.pop('A', torch.eye(self.dim_x, self.dim_x, dtype=torch.float32).unsqueeze(dim=0)).type(torch.FloatTensor)
-        self.B = kwargs.pop('B', torch.eye(self.dim_x, self.dim_u, dtype=torch.float32).unsqueeze(dim=0)).type(torch.FloatTensor)
-        self.C = kwargs.pop('C', torch.eye(self.dim_a, self.dim_x, dtype=torch.float32).unsqueeze(dim=0)).type(torch.FloatTensor)
+        self.A = kwargs.pop('A', torch.eye(self.dim_x, self.dim_x).unsqueeze(dim=0))
+        self.B = kwargs.pop('B', torch.eye(self.dim_x, self.dim_u).unsqueeze(dim=0))
+        self.C = kwargs.pop('C', torch.eye(self.dim_a, self.dim_x).unsqueeze(dim=0))
 
         # If fit_D_matrix flag is false, D will be initially set to zero and also will not be updated with gradient descent
         if self.fit_D_matrix:
-            self.D = kwargs.pop('D', torch.eye(self.dim_a, self.dim_u, dtype=torch.float32)).type(torch.FloatTensor)
+            self.D = kwargs.pop('D', torch.eye(self.dim_a, self.dim_u))
         else:
-            self.D = torch.zeros(self.dim_a, self.dim_u, dtype=torch.float32).type(torch.FloatTensor)
+            self.D = torch.zeros(self.dim_a, self.dim_u)
 
         # Get KF initial conditions
-        self.mu_0 = kwargs.pop('mu_0', torch.zeros(self.dim_x, dtype=torch.float32)).type(torch.FloatTensor)
-        self.Lambda_0 = kwargs.pop('Lambda_0', torch.eye(self.dim_x, self.dim_x, dtype=torch.float32)).type(torch.FloatTensor)
+        self.mu_0 = kwargs.pop('mu_0', torch.zeros(self.dim_x))
+        self.Lambda_0 = kwargs.pop('Lambda_0', torch.eye(self.dim_x, self.dim_x))
 
         # Get initial process and observation noise parameters
-        self.W_log_diag = kwargs.pop('W_log_diag', torch.ones(self.dim_x, dtype=torch.float32)).type(torch.FloatTensor)
-        self.R_log_diag = kwargs.pop('R_log_diag', torch.ones(self.dim_a, dtype=torch.float32)).type(torch.FloatTensor)
+        self.W_log_diag = kwargs.pop('W_log_diag', torch.ones(self.dim_x))
+        self.R_log_diag = kwargs.pop('R_log_diag', torch.ones(self.dim_a))
 
         # Register trainable parameters to module
         self._register_params()
@@ -141,6 +141,18 @@ class LDM(nn.Module):
         return W, R
 
 
+    def __repr__(self):
+        W, R = self._get_covariance_matrices()
+        r = (f'A={self.A.numpy()}\n'
+              f'B={self.B.numpy()}\n'
+              f'W={W.numpy()}\n'
+            '--\n'
+            f'C={self.C.numpy()}\n'
+            f'D={self.D.numpy() if self.fit_D_matrix else None}\n'
+            f'R={R.numpy()}')
+        return r
+
+
     def step(self, x, u=None, noise=False):
         W, R = self._get_covariance_matrices()
 
@@ -190,9 +202,9 @@ class LDM(nn.Module):
         num_seq, num_steps, _ = a.shape
 
         if mask is None:
-            mask = torch.ones(num_seq, num_steps, dtype=torch.float32)
+            mask = torch.ones(num_seq, num_steps)
         if u is None:
-            u = torch.zeros(num_seq, num_steps, self.dim_u, dtype=torch.float32)
+            u = torch.zeros(num_seq, num_steps, self.dim_u)
 
 
         # Make sure that mask is 3D (last axis is 1-dimensional)
@@ -212,12 +224,12 @@ class LDM(nn.Module):
         Lambda_pred = Lambda_0 # (num_seq, dim_x, dim_x)
 
         # Create empty arrays for filtered and predicted estimates, NOTE: The last time-step of the prediction has T+1|T, which may not be of interest
-        mu_pred_all = torch.zeros((num_steps, num_seq, self.dim_x), dtype=torch.float32, device=mu_0.device)
-        mu_t_all = torch.zeros((num_steps, num_seq, self.dim_x), dtype=torch.float32, device=mu_0.device)
+        mu_pred_all = torch.zeros((num_steps, num_seq, self.dim_x), device=mu_0.device)
+        mu_t_all = torch.zeros((num_steps, num_seq, self.dim_x), device=mu_0.device)
 
         # Create empty arrays for filtered and predicted error covariance, NOTE: The last time-step of the prediction has T+1|T, which may not be of interest
-        Lambda_pred_all = torch.zeros((num_steps, num_seq, self.dim_x, self.dim_x), dtype=torch.float32, device=mu_0.device)
-        Lambda_t_all = torch.zeros((num_steps, num_seq, self.dim_x, self.dim_x), dtype=torch.float32, device=mu_0.device)
+        Lambda_pred_all = torch.zeros((num_steps, num_seq, self.dim_x, self.dim_x), device=mu_0.device)
+        Lambda_t_all = torch.zeros((num_steps, num_seq, self.dim_x, self.dim_x), device=mu_0.device)
 
         # Get covariance matrices
         W, R = self._get_covariance_matrices()
@@ -237,13 +249,13 @@ class LDM(nn.Module):
 
             # Project system uncertainty into measurement space, get Kalman Gain
             S = C_t @ Lambda_pred @ torch.permute(C_t, (0, 2, 1)) + R # (num_seq, dim_a, dim_a)
-            S_inv = torch.inverse(S) # num_seq, dim_a, dim_a)
+            S_inv = torch.inverse(S) # (num_seq, dim_a, dim_a)
             K = Lambda_pred @ torch.permute(C_t, (0, 2, 1)) @ S_inv # (num_seq, dim_x, dim_a)
             K = torch.mul(K, mask[:, t, ...].unsqueeze(dim=1))  # (num_seq, dim_x, dim_a) x (num_seq, 1,  1)
 
             # Get current mu and Lambda
             mu_t = mu_pred + (K @ r.unsqueeze(dim=-1)).squeeze(dim=-1) # (num_seq, dim_x)
-            I_KC = torch.eye(self.dim_x, dtype=torch.float32, device=mu_0.device) - K @ C_t # (num_seq, dim_x, dim_x)
+            I_KC = torch.eye(self.dim_x, device=mu_0.device) - K @ C_t # (num_seq, dim_x, dim_x)
             Lambda_t = I_KC @ Lambda_pred # (num_seq, dim_x, dim_x)
 
             # Tile A and B matrices for each time segment
@@ -329,8 +341,8 @@ class LDM(nn.Module):
         num_steps, num_seq, _ = mu_pred_all.shape
 
         # Create empty arrays for smoothed dynamic latent factors and error covariances
-        mu_back_all = torch.zeros((num_steps, num_seq, self.dim_x), dtype=torch.float32, device=mu_pred_all.device) # (num_steps, num_seq, dim_x)
-        Lambda_back_all = torch.zeros((num_steps, num_seq, self.dim_x, self.dim_x), dtype=torch.float32, device=mu_pred_all.device) # (num_steps, num_seq, dim_x, dim_x)
+        mu_back_all = torch.zeros((num_steps, num_seq, self.dim_x), device=mu_pred_all.device) # (num_steps, num_seq, dim_x)
+        Lambda_back_all = torch.zeros((num_steps, num_seq, self.dim_x, self.dim_x), device=mu_pred_all.device) # (num_steps, num_seq, dim_x, dim_x)
 
         # Last smoothed estimation is equivalent to the filtered estimation
         mu_back_all[-1, ...] = mu_t_all[-1, ...]
@@ -423,7 +435,7 @@ class LDM(nn.Module):
         num_seq, num_steps, _ = u.shape
 
         if u is None:
-            u = torch.zeros(num_seq, num_steps, self.dim_u, dtype=torch.float32)
+            u = torch.zeros(num_seq, num_steps, self.dim_u)
 
         # Initialize mu_0 and Lambda_0
         mu_0 = self.mu_0.unsqueeze(dim=0).repeat(num_seq, 1) # (num_seq, dim_x)
@@ -433,12 +445,12 @@ class LDM(nn.Module):
         Lambda_pred = Lambda_0 # (num_seq, dim_x, dim_x)
 
         # Create empty arrays for filtered and predicted estimates, NOTE: The last time-step of the prediction has T+1|T, which may not be of interest
-        mu_pred_all = torch.zeros((num_steps, num_seq, self.dim_x), dtype=torch.float32, device=mu_0.device)
-        mu_t_all = torch.zeros((num_steps, num_seq, self.dim_x), dtype=torch.float32, device=mu_0.device)
+        mu_pred_all = torch.zeros((num_steps, num_seq, self.dim_x), device=mu_0.device)
+        mu_t_all = torch.zeros((num_steps, num_seq, self.dim_x), device=mu_0.device)
 
         # Create empty arrays for filtered and predicted error covariance, NOTE: The last time-step of the prediction has T+1|T, which may not be of interest
-        Lambda_pred_all = torch.zeros((num_steps, num_seq, self.dim_x, self.dim_x), dtype=torch.float32, device=mu_0.device)
-        Lambda_t_all = torch.zeros((num_steps, num_seq, self.dim_x, self.dim_x), dtype=torch.float32, device=mu_0.device)
+        Lambda_pred_all = torch.zeros((num_steps, num_seq, self.dim_x, self.dim_x), device=mu_0.device)
+        Lambda_t_all = torch.zeros((num_steps, num_seq, self.dim_x, self.dim_x), device=mu_0.device)
 
         # Get covariance matrices
         W, R = self._get_covariance_matrices()
@@ -507,7 +519,7 @@ class LDM(nn.Module):
             mu_pred_all, mu_t_all, mu_back_all, Lambda_pred_all, Lambda_t_all, Lambda_back_all = self.smooth(a=a, u=u, mask=mask)
         else:
             mu_pred_all, mu_t_all, Lambda_pred_all, Lambda_t_all = self.filter(a=a, u=u, mask=mask)
-            mu_back_all = torch.ones_like(mu_t_all, dtype=torch.float32, device=mu_t_all.device)
-            Lambda_back_all = torch.ones_like(Lambda_t_all, dtype=torch.float32, device=Lambda_t_all.device)
+            mu_back_all = torch.ones_like(mu_t_all, device=mu_t_all.device)
+            Lambda_back_all = torch.ones_like(Lambda_t_all, device=Lambda_t_all.device)
 
         return mu_pred_all, mu_t_all, mu_back_all, Lambda_pred_all, Lambda_t_all, Lambda_back_all

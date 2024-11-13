@@ -39,6 +39,7 @@ class RNN(nn.Module):
         self.f = torch.tanh
         self.dt = dt
         self.tau = tau
+        assert 0 < self.dt/self.tau <= 1
 
         #readout parameters (feedthrough by default)
         if dim_y is None:

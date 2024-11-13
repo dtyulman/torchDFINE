@@ -44,7 +44,7 @@ def verify_shape(tensor, shape):
     return shape
 
 
-def carry_to_device(data, device, dtype=torch.float32):
+def carry_to_device(data, device):
     '''
     Carries dict/list of torch Tensors/numpy arrays to desired device recursively
 
@@ -52,7 +52,6 @@ def carry_to_device(data, device, dtype=torch.float32):
     ------------
     - data: torch.Tensor/np.ndarray/dict/list: Dictionary/list of torch Tensors/numpy arrays or torch Tensor/numpy array to be carried to desired device
     - device: str, Device name to carry the torch Tensors/numpy arrays to
-    - dtype: torch.dtype, Data type for torch.Tensor to be returned, torch.float32 by default
 
     Returns:
     ------------
@@ -63,7 +62,7 @@ def carry_to_device(data, device, dtype=torch.float32):
         return data.to(device)
 
     elif isinstance(data, np.ndarray):
-        return torch.tensor(data, dtype=dtype).to(device)
+        return torch.tensor(data).to(device)
 
     elif isinstance(data, dict):
         for key in data.keys():
@@ -79,14 +78,13 @@ def carry_to_device(data, device, dtype=torch.float32):
         return data
 
 
-def convert_to_tensor(x, dtype=torch.float32):
+def convert_to_tensor(x):
     '''
     Converts numpy.ndarray to torch.Tensor
 
     Parameters:
     ------------
     - x: np.ndarray, Numpy array to convert to torch.Tensor (if it's of type torch.Tensor already, it's returned without conversion)
-    - dtype: torch.dtype, Data type for torch.Tensor to be returned, torch.float32 by default
 
     Returns:
     ------------
@@ -96,11 +94,16 @@ def convert_to_tensor(x, dtype=torch.float32):
     if isinstance(x, torch.Tensor):
         y = x
     elif isinstance(x, np.ndarray):
-        y = torch.tensor(x, dtype=dtype) # use np.ndarray as middle step so that function works with tf tensors as well
+        y = torch.tensor(x) # use np.ndarray as middle step so that function works with tf tensors as well
     else:
         assert False, 'Only Numpy array can be converted to tensor'
     return y
 
+
+def convert_to_numpy(x):
+    if isinstance(x, torch.Tensor):
+        return x.detach().numpy()
+    return x
 
 def flatten_dict(dictionary, level=[]):
     '''

@@ -32,19 +32,19 @@ class DFINEDataset(Dataset):
 
         # If control input is not provided, initialize it with 1-dimensional zero input
         if u is None:
-            self.u = torch.zeros(*y.shape[:-1], 1, dtype=torch.float32)
+            self.u = torch.zeros(*y.shape[:-1], 1)
         else:
             self.u = u
 
         # If behv is not provided, initialize it with zeros.
         if behv is None:
-            self.behv = torch.zeros(y.shape[:-1], dtype=torch.float32).unsqueeze(dim=-1)
+            self.behv = torch.zeros(y.shape[:-1]).unsqueeze(dim=-1)
         else:
             self.behv = behv
 
         # If mask is not provided, initialize it with ones.
         if mask is None:
-            self.mask = torch.ones(y.shape[:-1], dtype=torch.float32).unsqueeze(dim=-1)
+            self.mask = torch.ones(y.shape[:-1]).unsqueeze(dim=-1)
         else:
             self.mask = mask
 
@@ -94,8 +94,8 @@ class ControlledDFINEDataset(IterableDataset):
         self._num_seqs_generated += 1
 
         # Pick a random initial and target point
-        x0   = torch.rand(self.controller.model.dim_x, dtype=torch.float32)*(self.xmax-self.xmin) + self.xmin
-        x_ss = torch.rand(self.controller.model.dim_x, dtype=torch.float32)*(self.xmax-self.xmin) + self.xmin
+        x0   = torch.rand(self.controller.model.dim_x)*(self.xmax-self.xmin) + self.xmin
+        x_ss = torch.rand(self.controller.model.dim_x)*(self.xmax-self.xmin) + self.xmin
 
         # Run the contoller using the current model
         _, a_ss, y_ss = self.controller.generate_observation(x_ss)
@@ -105,6 +105,6 @@ class ControlledDFINEDataset(IterableDataset):
 
         # Return the trajectory for training the next iteration of the model
         y, u = self.outputs['y'], self.outputs['u']
-        behv = torch.zeros(y.shape[:-1], dtype=torch.float32).unsqueeze(dim=-1)
-        mask = torch.ones(y.shape[:-1], dtype=torch.float32).unsqueeze(dim=-1)
+        behv = torch.zeros(y.shape[:-1]).unsqueeze(dim=-1)
+        mask = torch.ones(y.shape[:-1]).unsqueeze(dim=-1)
         return y.squeeze(0), u.squeeze(0), behv.squeeze(0), mask.squeeze(0)

@@ -8,8 +8,82 @@ import control
 from DFINE import DFINE
 from data.SSM import NonlinearStateSpaceModel
 from data.RNN import RNN, ReachRNN
-from python_utils import verify_shape
+from python_utils import verify_shape, convert_to_tensor, convert_to_numpy
 from plot_utils import plot_vs_time
+
+
+from cvxopt import matrix, solvers
+solvers.options['show_progress'] = False  # Suppress solver output
+
+
+class Constrained_LQR_MPC:
+    """ Model Predictive Control with input constraints using Quadratic Programming."""
+    def __init__(self, A, B, Q, R, horizon, u_min, u_max, x_ss=0):
+        """
+        Inputs:
+            A (np.array): System dynamics matrix.
+            B (np.array): Control input matrix.
+            Q (np.array): State cost matrix.
+            R (np.array): Control input cost matrix.
+            horizon (int): Prediction horizon for the MPC.
+            u_min (float): Minimum control input.
+            u_max (float): Maximum control input.
+        """
+        #Target
+        self.x_ss = convert_to_numpy(x_ss)
+
+
+        # Dimensions
+        self.n = n = A.shape[0]  # State dimension
+        self.m = m = B.shape[1]  # Control input dimension
+        self.horizon = horizon
+
+        # Build prediction matrices for the QP
+        self.Q = np.kron(np.eye(horizon), Q)       # Block diagonal matrix of Q over the horizon
+        self.R = np.kron(np.eye(horizon), R)       # Block diagonal matrix of R over the horizon
+
+        # Build the augmented B matrix for the horizon
+        self.B = np.zeros((n * horizon, m * horizon))
+        for i in range(horizon):
+            for j in range(i + 1):
+                self.B[i * n:(i + 1) * n, j * m:(j + 1) * m] = np.linalg.matrix_power(A, i - j) @ B
+
+        # Build the augmented A matrix for initial state influence over horizon
+        self.A = np.zeros((n * horizon, n))
+        for i in range(horizon):
+            self.A[i * n:(i + 1) * n, :] = np.linalg.matrix_power(A, i + 1)
+
+        # Define the QP matrices for the cost function
+        self.P = matrix(2 * self.B.T @ self.Q @ self.B + self.R)
+
+        # Inequality constraints for control bounds across the horizon
+        self.G = matrix(np.vstack([np.eye(m * horizon), -np.eye(m * horizon)]))
+        self.h = matrix(np.hstack([u_max * np.ones(m * horizon), -u_min * np.ones(m * horizon)]))
+
+
+    def __call__(self, x, t=None):
+        """
+        x (np.array): Initial state vector.
+
+        """
+        B,N = x.shape
+        x = convert_to_numpy(x)
+
+        u = np.empty((B, self.m))
+        for b in range(B):
+            # Define the linear term in the QP objective
+            q = matrix(2 * self.B.T @ self.Q @ self.A @ (x[b,:] - self.x_ss[b,:]))
+
+            # Solve the QP to get the optimal control sequence
+            sol = solvers.qp(self.P, q, self.G, self.h)
+            u_sequence = np.array(sol['x']).reshape(self.horizon, self.m)
+
+            # Apply only the first control input in the sequence (receding horizon)
+            u[b,:] = u_sequence[0]
+
+        return convert_to_tensor(u)
+
+
 
 
 class LQGController():
@@ -20,8 +94,6 @@ class LQGController():
         """
         self.model = model
         self.plant = plant
-
-        assert self.plant.dim_y == self.model.dim_y, 'Observation dimensions must match in plant and model'
 
         #hard bounds on control inputs
         self.u_min = u_min
@@ -88,12 +160,8 @@ class LQGController():
         return a, y
 
 
-    def compute_lqr_gain(self, Q=1, R=1, penalize_a=True):
-        """
-        Compute infinite-horizon LQR feedback gain matrix G
-        Cost function: J = \\sum_t x^T Q x + u^T R u
-        """
-        A, B, C = self.get_model_matrices()
+    def make_LQR_matrices(self, Q=1, R=1, F=None, penalize_a=True):
+        _, _, C = self.get_model_matrices()
 
         if isinstance(Q, (float, int)):
             if penalize_a:  #effectively puts the penalty on a(t) with Q=I because a = C @ x
@@ -104,9 +172,40 @@ class LQGController():
         if isinstance(R, (float, int)):
             R = R * torch.eye(self.plant.dim_u) #[u,u]
 
-        _, _, G = control.dare(A, B, Q, R) #[x,x],[x,u],[x,x],[u,u]->[u,x]
-        G = torch.tensor(G, dtype=torch.float32)
-        return G
+
+        if F is None:
+            F = Q
+        elif isinstance(F, (float, int)):
+            if penalize_a:  #effectively puts the penalty on a(t) with Q=I because a = C @ x
+                F = F * (C.T @ C) #[x,a]@[a,x]->[x,x]
+            else:
+                F = F * torch.eye(self.model.dim_x) #[x,x]
+
+        return Q, R, F
+
+
+    def compute_lqr_gain(self, Q=1, R=1, F=None, penalize_a=True, T=float('inf')):
+        """
+        Compute infinite-horizon LQR feedback gain matrix K
+        Cost function: J = \\sum_t x^T Q x + u^T R u
+        """
+        A, B, _ = self.get_model_matrices()
+        Q, R, F = self.make_LQR_matrices(Q, R, F, penalize_a)
+
+        if T < float('inf'):
+            #finite-horizon LQR
+            P = [None] * (T + 1)
+            P[T] = F
+            K = [None] * T #gain
+            for k in range(T-1, -1, -1):
+                K[k] = torch.linalg.inv(R + B.T @ P[k+1] @ B) @ (B.T @ P[k+1] @ A)
+                P[k] = Q + A.T @ P[k+1] @ A - A.T @ P[k+1] @ B @ K[k]
+        else:
+            #infinite-horizon LQR
+            _, _, K = control.dare(A, B, Q, R) #[x,x],[x,u],[x,x],[u,u]->[u,x]
+            K = torch.tensor(K, dtype=torch.get_default_dtype())
+
+        return K
 
 
     def compute_steady_state_control(self, x_ss, bias=0):
@@ -115,7 +214,8 @@ class LQGController():
         I = torch.eye(self.model.dim_x) #[x,x]
         u_ss = torch.linalg.pinv(B) @ ((I-A)@x_ss.unsqueeze(-1) - bias) #[u,x] @ ([x,x]@[b,x,1] - [b,x,1]) -> [b,u,1]
 
-        assert (self.u_min <= u_ss).all() and (u_ss <= self.u_max).all(), 'Steady state control input outside of min/max bounds'
+        if not ((self.u_min <= u_ss).all() and (u_ss <= self.u_max).all()):
+            print(f'Warning: Steady state control input (min={u_ss.min()}, max={u_ss.max()}) outside of bounds (min={self.u_min}, max={self.u_max})')
         return u_ss.squeeze(-1) #[b,u]
 
 
@@ -135,7 +235,7 @@ class LQGController():
         self.a_hat_fwd[:,0,:], self.y_hat[:,0,:] = self.verify_latents(self.x_hat[:,0,:])
 
 
-    def run_control(self, y_ss, plant_init={}, Q=1, R=1, num_steps=100, t_on=-1, t_off=float('inf'), ground_truth_latents='', controller=None):
+    def run_control(self, y_ss, z_ss=None, plant_init={}, F=None, Q=1, R=1, num_steps=100, horizon=float('inf'), t_on=None, t_off=None, ground_truth_latents='', controller=None, penalize_a=True):
         """
         inputs:
             y_ss: [b,y], target
@@ -143,12 +243,22 @@ class LQGController():
             ground_truth_latents: 'a', 'x', or 'ax' or ''. Only when plant is NonlinearStateSpaceModel
         """
 
+        t_on = 0 if t_on is None else t_on
+        t_off = num_steps if t_off is None else t_off
+        assert t_on >= 0
+        assert horizon >= min(t_off-t_on+1, num_steps) or controller=='mpc', 'Horizon must be at least the duration of control'
+        if F is not None and horizon == float('inf'):
+            horizon = t_off - t_on+1
+        assert horizon < float('inf') or F is None, 'Set horizon to finite value if specifying terminal cost'
+
         num_seqs = y_ss.shape[0]
 
         # Compute control constants
         bias = 0
         u_prior = None
-        def step_plant(u): return self.plant.step(u=u)
+        def step_plant(u):
+            return self.plant.step(u=u)
+
         def pad_input(u_seq):
             """Assume input was zero for t<0, make u_seq=[u_{-1}, u_{0}, ..., u_{t}] with u_{-1}=0
                 input: [b,t,u]: u_{0}, ..., u_{t}
@@ -157,25 +267,38 @@ class LQGController():
             return torch.cat((zero, u_seq), dim=1)
 
         if 'RNN' in self.plant.__class__.__name__: #if isinstance(self.plant, RNN): #u = [y_ss; u_lqr]
-            Bs, _ = self.model.ldm.B.split([self.plant.dim_s, self.plant.dim_u], dim=1)
-            bias = Bs @ y_ss.unsqueeze(-1) #[x,s] @ [b,s,1] -> [b,x,1]
-            u_prior = torch.cat((y_ss.unsqueeze(1), #[b,s]->[b,1,s]
-                                 torch.zeros(num_seqs,1,self.plant.dim_u)), #[b,1,u]
-                                dim=-1) #[b,1,s+u]
+            if self.plant.dim_s > 0: #hack to indicate include_s=True in DFINE training
+                Bs, _ = self.model.ldm.B.split([self.plant.dim_s, self.plant.dim_u], dim=1)
+                bias = Bs @ z_ss.unsqueeze(-1) #[x,s] @ [b,s,1] -> [b,x,1]
+                u_prior = torch.cat((z_ss.unsqueeze(1), #[b,s]->[b,1,s]
+                                      torch.zeros(num_seqs,1,self.plant.dim_u)), #[b,1,u]
+                                    dim=-1) #[b,1,s+u]
 
-            def step_plant(u): self.plant.step(s=y_ss, u=u)
+                _pad_input = pad_input
+                def pad_input(u_seq): #make u = [z_ss; u_lqr]
+                    u_seq = _pad_input(u_seq)
+                    s_seq = z_ss.unsqueeze(1).expand(-1,u_seq.shape[1],-1) #[b,y]->[b,t,y]
+                    u_seq = torch.cat((s_seq, u_seq), dim=-1) #[b,t,s+u]
 
-            _pad_input = pad_input
-            def pad_input(u_seq): #make u = [y_ss; u_lqr]
-                u_seq = _pad_input(u_seq)
-                s_seq = y_ss.unsqueeze(1).expand(-1,u_seq.shape[1],-1) #[b,y]->[b,t,y]
-                u_seq = torch.cat((s_seq, u_seq), dim=-1) #[b,t,s+u]
+            def step_plant(u):
+                self.plant.step(s=z_ss, u=u)
+
 
         x_hat_ss, a_hat_ss = self.estimate_latents(y_ss, steady_state=True) #cannot use ground_truth_latents here, not defined #[b,y]->[b,x],[b,a]
         u_hat_ss = self.compute_steady_state_control(x_hat_ss, bias) #[b,x]->[b,u]
-        if controller is None:
-            G = self.compute_lqr_gain(Q, R) #[u,x]
-            controller = lambda x: (-G @ (x - x_hat_ss).unsqueeze(-1)).squeeze(-1) + u_hat_ss #[u,x] @ [b,x,1] + [b,u] -> [b,u]
+        if controller is None or controller == 'LQG':
+            K = self.compute_lqr_gain(Q, R, F, T=horizon, penalize_a=penalize_a) #[u,x]
+            if not isinstance(K,list):
+                K = [K] * num_steps
+            controller = lambda x, t: (-K[t] @ (x - x_hat_ss).unsqueeze(-1)).squeeze(-1) + u_hat_ss #[u,x] @ [b,x,1] + [b,u] -> [b,u]
+        elif controller == 'SS-const':
+            controller = lambda x, t: u_hat_ss #[b,u]
+        elif controller == 'mpc':
+            A, B, _ = self.get_model_matrices()
+            Q, R, _ = self.make_LQR_matrices(Q, R, F)
+            assert horizon < float('inf'), 'Specify horizon if using MPC'
+            assert self.u_min > -float('inf') and self.u_max < float('inf'), 'Must give u_min and u_max'
+            controller = Constrained_LQR_MPC(A.detach().numpy(), B.detach().numpy(), Q, R, horizon, self.u_min, self.u_max, x_ss=x_hat_ss)
 
         # Initialization and logging
         self.plant.init_state(**plant_init, num_steps=num_steps, num_seqs=num_seqs)
@@ -185,8 +308,9 @@ class LQGController():
         for t in range(num_steps-1):
             # Compute LQR control input
             if t_on <= t <= t_off:
-                u_t = controller(self.x_hat[:,t,:].clone())
-                self.u[:,t,:] = torch.clip(u_t, min=self.u_min, max=self.u_max) #optional hard bounds
+                u_t = controller(self.x_hat[:,t,:].clone(), t-t_on)
+                # self.u[:,t,:] = torch.clip(u_t, min=self.u_min, max=self.u_max) #optional hard bounds
+                self.u[:,t,:] = u_t
             else:
                 self.u[:,t,:] = 0
 
@@ -214,7 +338,7 @@ class LQGController():
                  x_hat_ss, a_hat_ss, y_hat_ss, u_hat_ss, y_ss,
                  a_hat_fwd, a_hat_ss_fwd,
                  x_ss=None, a_ss=None, u_ss=None, x=None, a=None, #only when plant is NonlinearStateSpaceModel
-                 t_on=-1, t_off=float('inf'),
+                 t_on=None, t_off=None,
                  Q=None, R=None,
                  seq_num=0, max_plot_rows=7):
 

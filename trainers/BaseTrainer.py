@@ -127,8 +127,6 @@ class BaseTrainer:
             if key not in loss_dict:
                 if verbose:
                     self.logger.warning(f'{key} does not exist in loss_dict, metric cannot be updated!')
-                else:
-                    pass
             else:
                 self.metrics[train_valid][key].update(loss_dict[key], batch_size)
 
@@ -213,9 +211,11 @@ class BaseTrainer:
             self.start_epoch = ckpt['epoch'] + 1 if isinstance(ckpt['epoch'], int) else 1
             try:
                 optimizer.load_state_dict(ckpt['optimizer'])
-            except:
-                self.logger.error('Optimizer cannot be loaded!, check if optimizer type is consistent!')
-                assert False, ''
+            except Exception as e:
+                msg = 'Optimizer cannot be loaded!, check if optimizer type is consistent!'
+                self.logger.error(msg)
+                print(msg)
+                raise e
 
             if lr_scheduler is not None:
                 try:
@@ -226,9 +226,11 @@ class BaseTrainer:
 
         try:
             model.load_state_dict(ckpt['state_dict'])
-        except:
-            self.logger.error('Given architecture in config does not match the architecture of given checkpoint!')
-            assert False, ''
+        except Exception as e:
+            msg = 'Given architecture in config does not match the architecture of given checkpoint!'
+            self.logger.error(msg)
+            print(msg)
+            raise e
 
         self.logger.info(f'Checkpoint succesfully loaded from {load_path}!')
         return model, optimizer, lr_scheduler

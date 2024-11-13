@@ -6,12 +6,12 @@ Shanechi Lab, University of Southern California
 '''
 
 from torchmetrics import Metric
-import torch 
+import torch
 
 
 class Mean(Metric):
     '''
-    Mean metric class to log batch-averaged metrics to Tensorboard. 
+    Mean metric class to log batch-averaged metrics to Tensorboard.
     '''
 
     def __init__(self):
@@ -20,24 +20,23 @@ class Mean(Metric):
         '''
 
         super().__init__(dist_sync_on_step=False)
-        
+
         # Define total sum and number of samples that sum is computed over
-        self.add_state("sum", default=torch.tensor(0, dtype=torch.float32), dist_reduce_fx="sum")
-        self.add_state("num_samples", default=torch.tensor(0, dtype=torch.float32), dist_reduce_fx="sum")
+        self.add_state("sum", default=torch.tensor(0.), dist_reduce_fx="sum")
+        self.add_state("num_samples", default=torch.tensor(0.), dist_reduce_fx="sum")
 
 
     def update(self, value, batch_size):
         '''
         Updates the total sum and number of samples
 
-        Parameters: 
+        Parameters:
         ------------
         - value: torch.Tensor, shape: (), Value to add to sum
         - batch_size: torch.Tensor, shape: (), Number of samples that 'value' is averaged over
         '''
-
         value = value.clone().detach()
-        batch_size = torch.tensor(batch_size, dtype=torch.float32)
+        batch_size = torch.tensor(batch_size)
         self.sum += value.cpu() * batch_size
         self.num_samples += batch_size
 
@@ -47,15 +46,15 @@ class Mean(Metric):
         Resets the total sum and number of samples to 0
         '''
 
-        self.sum = torch.tensor(0, dtype=torch.float32)
-        self.num_samples = torch.tensor(0, dtype=torch.float32)
+        self.sum = torch.tensor(0.)
+        self.num_samples = torch.tensor(0.)
 
 
     def compute(self):
         '''
         Computes the mean metric.
 
-        Returns: 
+        Returns:
         ------------
         - avg: Average value for the metric
         '''

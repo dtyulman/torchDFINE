@@ -5,28 +5,28 @@ Hamidreza Abbaspourazad*, Eray Erturk* and Maryam M. Shanechi
 Shanechi Lab, University of Southern California
 '''
 
-import torch 
+import torch
 import torch.nn as nn
 
 
 def compute_mse(y_flat, y_hat_flat, mask_flat=None):
     '''
-    Returns average Mean Square Error (MSE) 
+    Returns average Mean Square Error (MSE)
 
     Parameters:
     ------------
-    - y_flat: torch.Tensor, shape: (num_samp, dim_y), True data to compute MSE of  
-    - y_hat_flat: torch.Tensor, shape: (num_samp, dim_y), Predicted/Reconstructed data to compute MSE of  
-    - mask_flat: torch.Tensor, shape: (num_samp, 1), Mask to compute MSE loss which shows whether 
+    - y_flat: torch.Tensor, shape: (num_samp, dim_y), True data to compute MSE of
+    - y_hat_flat: torch.Tensor, shape: (num_samp, dim_y), Predicted/Reconstructed data to compute MSE of
+    - mask_flat: torch.Tensor, shape: (num_samp, 1), Mask to compute MSE loss which shows whether
                                                      observations at each timestep exists (1) or are missing (0)
 
     Returns:
-    ------------    
-    - mse: torch.Tensor, Average MSE 
+    ------------
+    - mse: torch.Tensor, Average MSE
     '''
 
-    if mask_flat is None: 
-        mask_flat = torch.ones(y_flat.shape[:-1], dtype=torch.float32)
+    if mask_flat is None:
+        mask_flat = torch.ones(y_flat.shape[:-1])
 
     # Make sure mask is 2D
     if len(mask_flat.shape) != len(y_flat.shape):
@@ -35,7 +35,7 @@ def compute_mse(y_flat, y_hat_flat, mask_flat=None):
     # Compute the MSEs and mask the timesteps where observations are missing
     mse = (y_flat - y_hat_flat) ** 2
     mse = torch.mul(mask_flat, mse)
-    
+
     # Return the mean of the mse (over available observations)
     if mask_flat.shape[-1] != y_flat.shape[-1]: # which means shape of mask_flat is of dimension 1
         num_el = mask_flat.sum() * y_flat.shape[-1]
@@ -56,7 +56,7 @@ def get_activation_function(activation_str):
 
     Returns:
     ----------------------
-    - activation_fn: torch.nn, Activation function  
+    - activation_fn: torch.nn, Activation function
     '''
 
     if activation_str.lower() == 'elu':
@@ -90,7 +90,7 @@ def get_kernel_initializer_function(kernel_initializer_str):
 
     Returns:
     ----------------------
-    - kernel_initializer_fn: torch.nn.init, Kernel initialization function  
+    - kernel_initializer_fn: torch.nn.init, Kernel initialization function
     '''
 
     if kernel_initializer_str.lower() == 'uniform':

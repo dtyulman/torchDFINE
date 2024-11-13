@@ -110,6 +110,7 @@ class TrainerDFINE(BaseTrainer):
             metric_names.append('behv_loss')
         metric_names.append('model_loss')
         metric_names.append('reg_loss')
+        metric_names.append('spectr_reg_B_loss')
         metric_names.append('forward_pred_loss')
         metric_names.append('total_loss')
 
@@ -149,6 +150,9 @@ class TrainerDFINE(BaseTrainer):
 
         # Logging L2 regularization loss and L2 scale
         log_str += f"reg_loss: {self.metrics[train_valid]['reg_loss'].compute():.5f}, scale_l2: {self.dfine.scale_l2:.5f}\n"
+
+        if self.dfine.scale_spectr_reg_B > 0:
+            log_str += f"spectr_reg_B_loss: {self.metrics[train_valid]['spectr_reg_B_loss'].compute():.5f}, scale_spectr_reg_B: {self.dfine.scale_spectr_reg_B:.5f}\n"
 
         # If model is behavior-supervised, log behavior reconstruction loss
         if self.config.model.supervise_behv:
@@ -392,7 +396,7 @@ class TrainerDFINE(BaseTrainer):
 
         # Create the mask if it's None
         if mask_batch is None:
-            mask_batch = torch.ones(y_batch.shape[:-1], dtype=torch.float32).unsqueeze(dim=-1)
+            mask_batch = torch.ones(y_batch.shape[:-1]).unsqueeze(dim=-1)
 
         # Generate and save reconstructed neural observation plot
         self.create_y_plot(y_batch=y_batch, y_hat_batch=model_vars['y_hat'], mask_batch=mask_batch, epoch=epoch, trial_num=trial_num, prefix=f'{prefix}', feat_name='y_hat')
@@ -433,7 +437,7 @@ class TrainerDFINE(BaseTrainer):
 
         # Create the mask if it's None
         if mask_batch is None:
-            mask_batch = torch.ones(y_batch.shape[:-1], dtype=torch.float32).unsqueeze(dim=-1)
+            mask_batch = torch.ones(y_batch.shape[:-1]).unsqueeze(dim=-1)
 
         # Detach tensors for plotting
         y_batch = y_batch.detach().cpu()
@@ -520,7 +524,7 @@ class TrainerDFINE(BaseTrainer):
 
         # Create the mask if it's None
         if mask_batch is None:
-            mask_batch = torch.ones(y_batch.shape[:-1], dtype=torch.float32).unsqueeze(dim=-1)
+            mask_batch = torch.ones(y_batch.shape[:-1]).unsqueeze(dim=-1)
 
         # Get the number of steps ahead for which DFINE is optimized and create the figure
         num_k = len(self.config.loss.steps_ahead)
@@ -902,7 +906,8 @@ class TrainerDFINE(BaseTrainer):
 
         # Rest below is for logging scale values in the loss, will be same for all prefices, so log them only for 'train'
         if prefix != 'valid':
-            self.writer.add_scalar(f'scale_l2', self.dfine.scale_l2, epoch)
-            self.writer.add_scalar(f'learning_rate', self.lr_scheduler.get_last_lr()[0], epoch)
+            self.writer.add_scalar('scale_l2', self.dfine.scale_l2, epoch)
+            self.writer.add_scalar('scale_spectr_reg_B', self.dfine.scale_spectr_reg_B, epoch)
+            self.writer.add_scalar('learning_rate', self.lr_scheduler.get_last_lr()[0], epoch)
             if self.config.model.supervise_behv:
-                self.writer.add_scalar(f'scale_behv_recons', self.dfine.scale_behv_recons, epoch)
+                self.writer.add_scalar('scale_behv_recons', self.dfine.scale_behv_recons, epoch)

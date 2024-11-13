@@ -29,7 +29,7 @@ def plot_vs_time(seq, target=None, t_on=None, t_off=None, mode='tiled', max_N=10
     for ax in axs.flatten():
         if t_on is not None and t_on > 0:
             ax.axvline(t_on, color='k', ls='--')
-        if t_off is not None and t_off < float('inf'):
+        if t_off is not None and t_off < T:
             ax.axvline(t_off, color='k', ls='--')
 
     for ax in np.atleast_2d(axs)[-1,:]:
@@ -83,7 +83,7 @@ def _plot_overlaid(seq, target=None, ax=None, legend=True):
 
 
 
-def plot_parametric(seq, t_on=None, t_off=None, mode='line', cbar=True, ax=None, varname='dim', title=None, cmap='jet'):
+def plot_parametric(seq, t_on=None, t_off=None, mode='line', size=None, cbar=True, ax=None, varname='dim', title=None, cmap='turbo'):
     """
     seq is [T,N] or [B,T,N], where N>=2. Plots only first 3 dimensions if N>3
     """
@@ -116,9 +116,9 @@ def plot_parametric(seq, t_on=None, t_off=None, mode='line', cbar=True, ax=None,
     for s in seq:
         if mode == 'line':
             for i in range(T-1):
-                ax.plot(*s[i:i+2].T, color=color[i])
+                ax.plot(*s[i:i+2].T, color=color[i], lw=size)
         elif mode == 'scatter':
-            ax.scatter(*s.T, c=color)
+            ax.scatter(*s.T, c=color, s=size)
 
     #labels
     if cbar:
@@ -139,6 +139,23 @@ def plot_parametric(seq, t_on=None, t_off=None, mode='line', cbar=True, ax=None,
 
 
 
+def plot_eigvals(mat, ax=None, title=''):
+    fig, ax = _prep_axes(ax)
+    mat = _prep_mat(mat)
+    eigvals = torch.linalg.eigvals(mat)
+    ax.scatter(eigvals.real, eigvals.imag, marker='x')
+
+    x = torch.linspace(0, 2*torch.pi, 100)
+    ax.plot(torch.cos(x), torch.sin(x), color='k', lw=0.5)
+    ax.axvline(0, color='k', lw=0.5)
+    ax.axhline(0, color='k', lw=0.5)
+    ax.axis('equal')
+
+    ax.set_xlabel('$Re(\\lambda)$')
+    ax.set_ylabel('$Im(\\lambda)$')
+    ax.set_title(title)
+    return fig, ax
+
 ###########
 # Helpers #
 ###########
@@ -148,14 +165,6 @@ def _prep_axes(ax=None, nrows=1, ncols=1, **kwargs):
     else:
         if ncols>1 or nrows>1: #sanity check if specifying nrows or ncols
             assert len(ax.flatten()) == nrows*ncols
-
-        # if kwargs['squeeze'] is False:
-        #     if not isinstance(ax, np.ndarray):
-        #         ax = np.array(ax)
-        #     if nrows == 1 and ncols > 1:
-        #         _prep_mat(ax, num_dims=2, append_dim=0)
-        #     if nrows > 1 and ncols == 1:
-        #         _prep_mat(ax, num_dims=2, append_dim=1)
 
         if isinstance(ax, np.ndarray):
             fig = ax.flatten()[0].get_figure()

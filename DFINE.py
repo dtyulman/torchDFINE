@@ -73,11 +73,10 @@ class DFINE(nn.Module):
 
 
         # Initialize encoder and decoder(s)
-        if self.config.model.no_manifold:
+        if self.config.model.hidden_layer_list is None:
             # Make these a passthrough, thus setting the manifold latent to be equal to the observation
             # and reducing the model to a simple LDM
             assert self.dim_y == self.dim_a, 'Manifold latent and observation dimensions must be equal if not using autoencoder'
-            assert self.config.model.hidden_layer_list is None, 'Do not provide hidden_layer_list if not using autoencoder'
             assert self.config.model.activation is None, 'Do not provide activation if not using autoencoder'
             self.encoder = self.decoder = lambda x: x
         else:
@@ -120,7 +119,9 @@ class DFINE(nn.Module):
         if self.config.model.supervise_behv:
             self.scale_behv_recons = self.config.loss.scale_behv_recons
         self.scale_l2 = self.config.loss.scale_l2
+        self.scale_spectr_reg_B = self.config.loss.scale_spectr_reg_B
         self.scale_forward_pred = self.config.loss.scale_forward_pred
+
 
     def _get_MLP(self, input_dim, output_dim, layer_list, activation_str='tanh'):
         '''
@@ -168,22 +169,22 @@ class DFINE(nn.Module):
         '''
 
         kernel_initializer_fn = get_kernel_initializer_function(self.config.model.ldm_kernel_initializer)
-        A = kernel_initializer_fn(self.config.model.init_A_scale * torch.eye(self.dim_x, dtype=torch.float32))
-        B = kernel_initializer_fn(self.config.model.init_B_scale * torch.eye(self.dim_x, self.dim_u, dtype=torch.float32))
-        C = kernel_initializer_fn(self.config.model.init_C_scale * torch.randn(self.dim_a, self.dim_x, dtype=torch.float32))
-        
+        A = kernel_initializer_fn(self.config.model.init_A_scale * torch.eye(self.dim_x))
+        B = kernel_initializer_fn(self.config.model.init_B_scale * torch.eye(self.dim_x, self.dim_u))
+        C = kernel_initializer_fn(self.config.model.init_C_scale * torch.randn(self.dim_a, self.dim_x))
+
         # If fit_D_matrix flag is false, D will be initially set to zero and also will not be updated with gradient descent
         if self.config.model.fit_D_matrix:
-            D = kernel_initializer_fn(self.config.model.init_D_scale * torch.randn(self.dim_a, self.dim_u, dtype=torch.float32))
+            D = kernel_initializer_fn(self.config.model.init_D_scale * torch.randn(self.dim_a, self.dim_u))
         else:
-            D = torch.zeros(self.dim_a, self.dim_u, dtype=torch.float32)
-        
+            D = torch.zeros(self.dim_a, self.dim_u)
 
-        W_log_diag = torch.log(kernel_initializer_fn(torch.diag(self.config.model.init_W_scale * torch.eye(self.dim_x, dtype=torch.float32))))
-        R_log_diag = torch.log(kernel_initializer_fn(torch.diag(self.config.model.init_R_scale * torch.eye(self.dim_a, dtype=torch.float32))))
 
-        mu_0 = kernel_initializer_fn(torch.zeros(self.dim_x, dtype=torch.float32))
-        Lambda_0 = kernel_initializer_fn(self.config.model.init_cov * torch.eye(self.dim_x, dtype=torch.float32))
+        W_log_diag = torch.log(kernel_initializer_fn(torch.diag(self.config.model.init_W_scale * torch.eye(self.dim_x))))
+        R_log_diag = torch.log(kernel_initializer_fn(torch.diag(self.config.model.init_R_scale * torch.eye(self.dim_a))))
+
+        mu_0 = kernel_initializer_fn(torch.zeros(self.dim_x))
+        Lambda_0 = kernel_initializer_fn(self.config.model.init_cov * torch.eye(self.dim_x))
 
         return A, B, C, D, W_log_diag, R_log_diag, mu_0, Lambda_0
 
@@ -238,7 +239,7 @@ class DFINE(nn.Module):
 
         # Create the mask if it's None
         if mask is None:
-            mask = torch.ones(y.shape[:-1], dtype=torch.float32).unsqueeze(dim=-1)
+            mask = torch.ones(y.shape[:-1]).unsqueeze(dim=-1)
 
         # Get the encoded low-dimensional manifold factors (project via nonlinear manifold embedding) -> the outputs are (num_seq * num_steps, dim_a)
         a_hat = self.encoder(y.view(num_seq*num_steps, self.dim_y))
@@ -255,7 +256,7 @@ class DFINE(nn.Module):
         a_pred = (C @ x_pred.unsqueeze(dim=-1)).squeeze(dim=-1) #  (num_seq, num_steps, dim_a, dim_x) x (num_seq, num_steps, dim_x, 1) --> (num_seq, num_steps, dim_a)
         a_filter = (C @ x_filter.unsqueeze(dim=-1)).squeeze(dim=-1) #  (num_seq, num_steps, dim_a, dim_x) x (num_seq, num_steps, dim_x, 1) --> (num_seq, num_steps, dim_a)
         a_smooth = (C @ x_smooth.unsqueeze(dim=-1)).squeeze(dim=-1) #  (num_seq, num_steps, dim_a, dim_x) x (num_seq, num_steps, dim_x, 1) --> (num_seq, num_steps, dim_a)
-        
+
         # Remove the last timestep of predictions since it's T+1|T, which is not of interest to us
         x_pred = x_pred[:, :-1, :]
         Lambda_pred = Lambda_pred[:, :-1, :, :]
@@ -335,7 +336,7 @@ class DFINE(nn.Module):
 
         # If control input is None, default to zeroes
         if u is None:
-            u = torch.zeros(num_seq, num_steps, self.dim_u, dtype=torch.float32)
+            u = torch.zeros(num_seq, num_steps, self.dim_u)
 
         # Check if shapes of A, B, and C are 4D where first 2 dimensions are (number of trials/time segments) and (number of steps)
         if len(A.shape) == 2:
@@ -358,7 +359,7 @@ class DFINE(nn.Module):
 
         if self.config.model.fit_D_matrix:
             a_pred_k += (D[:, k:, ...] @ u[:,k:,...].unsqueeze(dim=-1)).squeeze(dim=-1)
-            
+
         # After obtaining k-step ahead predicted manifold latent factors, they're decoded to obtain k-step ahead predicted neural observations
         y_pred_k = self.decoder(a_pred_k.view(-1, self.dim_a))
 
@@ -375,7 +376,7 @@ class DFINE(nn.Module):
 
         if self.config.model.fit_D_matrix:
             a_forward_pred += (self.ldm.D @ u.unsqueeze(dim=-1)).squeeze(dim=-1)
-        
+
         # After obtaining k-step ahead predicted manifold latent factors, they're decoded forward predicted neural observations
         y_forward_pred = self.decoder(a_forward_pred.view(-1, self.dim_a))
 
@@ -413,7 +414,7 @@ class DFINE(nn.Module):
 
         # Create the mask if it's None
         if mask is None:
-            mask = torch.ones(y.shape[:-1], dtype=torch.float32).unsqueeze(dim=-1)
+            mask = torch.ones(y.shape[:-1]).unsqueeze(dim=-1)
 
         # Dump individual loss values for logging or Tensorboard
         loss_dict = dict()
@@ -438,8 +439,8 @@ class DFINE(nn.Module):
                                    mask_flat=mask.reshape(-1,))
             behv_loss = self.scale_behv_recons * behv_mse
         else:
-            behv_mse = torch.tensor(0, dtype=torch.float32, device=model_loss.device)
-            behv_loss = torch.tensor(0, dtype=torch.float32, device=model_loss.device)
+            behv_mse = torch.tensor(0, device=model_loss.device)
+            behv_loss = torch.tensor(0, device=model_loss.device)
         loss_dict['behv_mse'] = behv_mse
         loss_dict['behv_loss'] = behv_loss
 
@@ -450,6 +451,13 @@ class DFINE(nn.Module):
                 reg_loss = reg_loss + self.scale_l2 * torch.norm(param)
         loss_dict['reg_loss'] = reg_loss
 
+        # B matrix inverse spectral norm regularization loss
+        spectr_reg_B_loss = 0
+        if self.scale_spectr_reg_B > 0:
+            # spectr_reg_B_loss = self.scale_spectr_reg_B / torch.linalg.svd(self.ldm.B)[1].min()
+            spectr_reg_B_loss = self.scale_spectr_reg_B * (torch.linalg.cond(self.ldm.B) - 1)
+            loss_dict['spectr_reg_B_loss'] = spectr_reg_B_loss
+
         # Forward prediction loss
         forward_pred_loss = torch.tensor(0.)
         if self.scale_forward_pred > 0:
@@ -457,11 +465,11 @@ class DFINE(nn.Module):
             mse_forward_pred = compute_mse(y_flat=y.reshape(-1, self.dim_y),
                                    y_hat_flat=y_forward_pred.reshape(-1, self.dim_y),
                                    mask_flat=mask.reshape(-1,))
-            forward_pred_loss = self.scale_forward_pred * mse_forward_pred            
+            forward_pred_loss = self.scale_forward_pred * mse_forward_pred
         loss_dict['forward_pred_loss'] = forward_pred_loss
 
 
         # Final loss is summation of model loss (sum of k-step ahead MSEs), behavior reconstruction loss and L2 regularization loss
-        loss = model_loss + behv_loss + reg_loss + forward_pred_loss
+        loss = model_loss + behv_loss + reg_loss + spectr_reg_B_loss + forward_pred_loss
         loss_dict['total_loss'] = loss
         return loss, loss_dict
