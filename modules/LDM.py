@@ -55,12 +55,7 @@ class LDM(nn.Module):
         self.A = kwargs.pop('A', torch.eye(self.dim_x, self.dim_x).unsqueeze(dim=0))
         self.B = kwargs.pop('B', torch.eye(self.dim_x, self.dim_u).unsqueeze(dim=0))
         self.C = kwargs.pop('C', torch.eye(self.dim_a, self.dim_x).unsqueeze(dim=0))
-
-        # If fit_D_matrix flag is false, D will be initially set to zero and also will not be updated with gradient descent
-        if self.fit_D_matrix:
-            self.D = kwargs.pop('D', torch.eye(self.dim_a, self.dim_u))
-        else:
-            self.D = torch.zeros(self.dim_a, self.dim_u)
+        self.D = kwargs.pop('D', torch.eye(self.dim_a, self.dim_u)) if self.fit_D_matrix else torch.zeros(self.dim_a, self.dim_u)
 
         # Get KF initial conditions
         self.mu_0 = kwargs.pop('mu_0', torch.zeros(self.dim_x))
@@ -72,6 +67,18 @@ class LDM(nn.Module):
 
         # Register trainable parameters to module
         self._register_params()
+
+
+    def __repr__(self):
+        W, R = self._get_covariance_matrices()
+        return (
+            f'\nA={self.A.numpy()}\n'
+            f'B={self.B.numpy()}\n'
+            f'W={W.numpy()}\n'
+            '--\n'
+            f'C={self.C.numpy()}\n'
+            f'R={R.numpy()}\n'
+            )
 
 
     def _register_params(self):
@@ -86,8 +93,7 @@ class LDM(nn.Module):
         self.A = torch.nn.Parameter(self.A, requires_grad=True)
         self.B = torch.nn.Parameter(self.B, requires_grad=True)
         self.C = torch.nn.Parameter(self.C, requires_grad=True)
-        if self.fit_D_matrix:
-            self.D = torch.nn.Parameter(self.D, requires_grad=self.fit_D_matrix)
+        self.D = torch.nn.Parameter(self.D, requires_grad=self.fit_D_matrix)
 
         self.W_log_diag = torch.nn.Parameter(self.W_log_diag, requires_grad=self.is_W_trainable)
         self.R_log_diag = torch.nn.Parameter(self.R_log_diag, requires_grad=self.is_R_trainable)
@@ -143,37 +149,18 @@ class LDM(nn.Module):
 
     def __repr__(self):
         W, R = self._get_covariance_matrices()
-        r = (f'A={self.A.numpy()}\n'
-              f'B={self.B.numpy()}\n'
-              f'W={W.numpy()}\n'
-            '--\n'
-            f'C={self.C.numpy()}\n'
-            f'D={self.D.numpy() if self.fit_D_matrix else None}\n'
-            f'R={R.numpy()}')
+        r = (f'A={self.A.detach().numpy()}\n'
+             f'B={self.B.detach().numpy()}\n'
+             f'W={W.detach().numpy()}\n'
+             '--\n'
+
+             f'C={self.C.detach().numpy()}\n'
+             f'D={self.D.detach().numpy() if self.fit_D_matrix else None}\n'
+             f'R={R.detach().numpy()}')
         return r
 
 
-    def step(self, x, u=None, noise=False):
-        W, R = self._get_covariance_matrices()
-
-        # Step dynamics
-        x_next = self.A @ x
-        if u is not None:
-            x_next += self.B @ u
-        if noise:
-            x_next += MultivariateNormal(torch.zeros(self.dim_x), W).sample()
-
-        # Generate manifold latent
-        a_next = self.C @ x_next.squeeze()
-        if (u is not None) and self.fit_D_matrix:
-            a_next += self.D @ u
-        if noise:
-            a_next += MultivariateNormal(torch.zeros(self.dim_a), R).sample()
-
-        return x_next, a_next
-
-
-    def compute_forwards(self, a, u=None, mask=None):
+    def compute_forwards(self, a, u, mask=None):
         '''
         Performs the forward iteration of causal flexible Kalman filtering, given a batch of trials/segments/time-series
 
@@ -197,15 +184,10 @@ class LDM(nn.Module):
         - Lambda_t_all: torch.Tensor, shape: (num_steps, num_seq, dim_x, dim_x),
             Dynamic latent factor estimation error covariance filtered estimates (t|t) where first index of the second dimension has P_{0|0}
         '''
-
-
         num_seq, num_steps, _ = a.shape
 
         if mask is None:
             mask = torch.ones(num_seq, num_steps)
-        if u is None:
-            u = torch.zeros(num_seq, num_steps, self.dim_u)
-
 
         # Make sure that mask is 3D (last axis is 1-dimensional)
         if len(mask.shape) != len(a.shape):
@@ -217,34 +199,31 @@ class LDM(nn.Module):
         a_masked = torch.mul(a, mask) # (num_seq, num_steps, dim_a) x (num_seq, num_steps, 1)
 
         # Initialize mu_0 and Lambda_0
-        mu_0 = self.mu_0.unsqueeze(dim=0).repeat(num_seq, 1) # (num_seq, dim_x)
-        Lambda_0 = self.Lambda_0.unsqueeze(dim=0).repeat(num_seq, 1, 1) # (num_seq, dim_x, dim_x)
-
-        mu_pred = mu_0 # (num_seq, dim_x)
-        Lambda_pred = Lambda_0 # (num_seq, dim_x, dim_x)
+        mu_pred = self.mu_0.unsqueeze(dim=0).repeat(num_seq, 1) # (num_seq, dim_x)
+        Lambda_pred = self.Lambda_0.unsqueeze(dim=0).repeat(num_seq, 1, 1) # (num_seq, dim_x, dim_x)
 
         # Create empty arrays for filtered and predicted estimates, NOTE: The last time-step of the prediction has T+1|T, which may not be of interest
-        mu_pred_all = torch.zeros((num_steps, num_seq, self.dim_x), device=mu_0.device)
-        mu_t_all = torch.zeros((num_steps, num_seq, self.dim_x), device=mu_0.device)
+        mu_pred_all = torch.zeros((num_steps, num_seq, self.dim_x), device=mu_pred.device) #mu_pred_all[t,i,:] = mu_{t+1|t} for t=0..T-1
+        mu_t_all = torch.zeros((num_steps, num_seq, self.dim_x), device=mu_pred.device) #mu_t_all[t,i,:] = mu_{t|t} for t=0..T-1
 
         # Create empty arrays for filtered and predicted error covariance, NOTE: The last time-step of the prediction has T+1|T, which may not be of interest
-        Lambda_pred_all = torch.zeros((num_steps, num_seq, self.dim_x, self.dim_x), device=mu_0.device)
-        Lambda_t_all = torch.zeros((num_steps, num_seq, self.dim_x, self.dim_x), device=mu_0.device)
+        Lambda_pred_all = torch.zeros((num_steps, num_seq, self.dim_x, self.dim_x), device=mu_pred.device)
+        Lambda_t_all = torch.zeros((num_steps, num_seq, self.dim_x, self.dim_x), device=mu_pred.device)
 
         # Get covariance matrices
         W, R = self._get_covariance_matrices()
 
         for t in range(num_steps):
-            # Tile C matrix for each time segment
-            C_t = self.C.repeat(num_seq, 1, 1)
+            # Tile LDM matrices for each trial
+            A_t = self.A.repeat(num_seq, 1, 1) # (num_seq, dim_x, dim_x)
+            B_t = self.B.repeat(num_seq, 1, 1) # (num_seq, dim_x, dim_u)
+            C_t = self.C.repeat(num_seq, 1, 1) # (num_seq, dim_a, dim_x)
+            D_t = self.D.repeat(num_seq, 1, 1) # (num_seq, dim_a, dim_u)
 
             # Obtain residual
             a_pred = (C_t @ mu_pred.unsqueeze(dim=-1)).squeeze(dim=-1) # (num_seq, dim_a)
             r = a_masked[:, t, ...] - a_pred # (num_seq, dim_a)
-
             if self.fit_D_matrix:
-                # Tile D matrix for each time segment
-                D_t = self.D.repeat(num_seq, 1, 1)
                 r -= (D_t @ u[:,t,...].unsqueeze(dim=-1)).squeeze(dim=-1) # (num_seq, dim_a)
 
             # Project system uncertainty into measurement space, get Kalman Gain
@@ -255,22 +234,17 @@ class LDM(nn.Module):
 
             # Get current mu and Lambda
             mu_t = mu_pred + (K @ r.unsqueeze(dim=-1)).squeeze(dim=-1) # (num_seq, dim_x)
-            I_KC = torch.eye(self.dim_x, device=mu_0.device) - K @ C_t # (num_seq, dim_x, dim_x)
+            I_KC = torch.eye(self.dim_x, device=mu_pred.device) - K @ C_t # (num_seq, dim_x, dim_x)
             Lambda_t = I_KC @ Lambda_pred # (num_seq, dim_x, dim_x)
-
-            # Tile A and B matrices for each time segment
-            A_t = self.A.repeat(num_seq, 1, 1) # (num_seq, dim_x, dim_x)
-            B_t = self.B.repeat(num_seq, 1, 1) # (num_seq, dim_x, dim_u)
 
             # Prediction
             u_t = u[:, t, ...]
             mu_pred = (A_t @ mu_t.unsqueeze(dim=-1) + B_t @ u_t.unsqueeze(dim=-1)).squeeze(dim=-1) #(num_seq, dim_x, dim_x) x (num_seq, dim_x, 1) + (num_seq, dim_x, dim_u) x (num_seq, dim_u, 1) --> (num_seq, dim_x, 1) --> (num_seq, dim_x)
             Lambda_pred = A_t @ Lambda_t @ torch.permute(A_t, (0, 2, 1)) + W #(num_seq, dim_x, dim_x) x (num_seq, dim_x, dim_x) x (num_seq, dim_x, dim_x) --> (num_seq, dim_x, dim_x)
 
-            # Keep predictions and updates
+            # Store predictions and updates
             mu_pred_all[t, ...] = mu_pred
             mu_t_all[t, ...] = mu_t
-
             Lambda_pred_all[t, ...] = Lambda_pred
             Lambda_t_all[t, ...] = Lambda_t
 
@@ -410,79 +384,6 @@ class LDM(nn.Module):
         Lambda_back_all = torch.permute(Lambda_back_all, (1, 0, 2, 3))
 
         return mu_pred_all, mu_t_all, mu_back_all, Lambda_pred_all, Lambda_t_all, Lambda_back_all
-
-    def compute_forward_prediction(self, u=None):
-        '''
-        Performs the forward prediction batch of inputs
-
-        Parameters:
-        ------------
-        - u: torch.Tensor, shape: (num_seq, num_steps, dim_u),
-            Batch of control input vectors
-
-        Returns:
-        ------------
-        - mu_pred_all: torch.Tensor, shape: (num_steps, num_seq, dim_x),
-            Dynamic latent factor predictions (t+1|t) where first index of the second dimension has x_{1|0}
-        - mu_t_all: torch.Tensor, shape: (num_steps, num_seq, dim_x),
-            Dynamic latent factor filtered estimates (t|t) where first index of the second dimension has x_{0|0}
-        - Lambda_pred_all: torch.Tensor, shape: (num_steps, num_seq, dim_x, dim_x),
-            Dynamic latent factor estimation error covariance predictions (t+1|t) where first index of the second dimension has P_{1|0}
-        - Lambda_t_all: torch.Tensor, shape: (num_steps, num_seq, dim_x, dim_x),
-            Dynamic latent factor estimation error covariance filtered estimates (t|t) where first index of the second dimension has P_{0|0}
-        '''
-
-        num_seq, num_steps, _ = u.shape
-
-        if u is None:
-            u = torch.zeros(num_seq, num_steps, self.dim_u)
-
-        # Initialize mu_0 and Lambda_0
-        mu_0 = self.mu_0.unsqueeze(dim=0).repeat(num_seq, 1) # (num_seq, dim_x)
-        Lambda_0 = self.Lambda_0.unsqueeze(dim=0).repeat(num_seq, 1, 1) # (num_seq, dim_x, dim_x)
-
-        mu_pred = mu_0 # (num_seq, dim_x)
-        Lambda_pred = Lambda_0 # (num_seq, dim_x, dim_x)
-
-        # Create empty arrays for filtered and predicted estimates, NOTE: The last time-step of the prediction has T+1|T, which may not be of interest
-        mu_pred_all = torch.zeros((num_steps, num_seq, self.dim_x), device=mu_0.device)
-        mu_t_all = torch.zeros((num_steps, num_seq, self.dim_x), device=mu_0.device)
-
-        # Create empty arrays for filtered and predicted error covariance, NOTE: The last time-step of the prediction has T+1|T, which may not be of interest
-        Lambda_pred_all = torch.zeros((num_steps, num_seq, self.dim_x, self.dim_x), device=mu_0.device)
-        Lambda_t_all = torch.zeros((num_steps, num_seq, self.dim_x, self.dim_x), device=mu_0.device)
-
-        # Get covariance matrices
-        W, R = self._get_covariance_matrices()
-
-        for t in range(num_steps):
-            # Get current mu and Lambda
-            mu_t = mu_pred # (num_seq, dim_x) Data is not used in the update stage (equaivalently, the Kalman gain is 0)
-            Lambda_t = Lambda_pred # (num_seq, dim_x, dim_x) Data is not used in the update stage (equaivalently, the Kalman gain is 0)
-
-            # Tile A and B matrices for each time segment
-            A_t = self.A.repeat(num_seq, 1, 1) # (num_seq, dim_x, dim_x)
-            B_t = self.B.repeat(num_seq, 1, 1) # (num_seq, dim_x, dim_u)
-
-            # Prediction
-            u_t = u[:, t, ...]
-            mu_pred = (A_t @ mu_t.unsqueeze(dim=-1) + B_t @ u_t.unsqueeze(dim=-1)).squeeze(dim=-1) #(num_seq, dim_x, dim_x) x (num_seq, dim_x, 1) + (num_seq, dim_x, dim_u) x (num_seq, dim_u, 1) --> (num_seq, dim_x, 1) --> (num_seq, dim_x)
-            Lambda_pred = A_t @ Lambda_t @ torch.permute(A_t, (0, 2, 1)) + W #(num_seq, dim_x, dim_x) x (num_seq, dim_x, dim_x) x (num_seq, dim_x, dim_x) --> (num_seq, dim_x, dim_x)
-
-            # Keep predictions and updates
-            mu_pred_all[t, ...] = mu_pred
-            mu_t_all[t, ...] = mu_t
-
-            Lambda_pred_all[t, ...] = Lambda_pred
-            Lambda_t_all[t, ...] = Lambda_t
-
-        mu_pred_all = torch.permute(mu_pred_all, (1, 0, 2)) # (num_seq, num_step, dim_x)
-        mu_t_all = torch.permute(mu_t_all, (1, 0, 2)) # (num_seq, num_step, dim_x)
-
-        Lambda_pred_all = torch.permute(Lambda_pred_all, (1, 0, 2, 3)) # (num_seq, num_step, dim_x, dim_x)
-        Lambda_t_all = torch.permute(Lambda_t_all, (1, 0, 2, 3)) # (num_seq, num_step, dim_x, dim_x)
-
-        return mu_pred_all, mu_t_all, Lambda_pred_all, Lambda_t_all
 
 
     def forward(self, a, u=None, mask=None, do_smoothing=False):

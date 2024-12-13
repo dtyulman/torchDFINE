@@ -24,11 +24,11 @@ _config.seed = int(torch.randint(low=0, high=100000, size=(1,)))
 # model
 _config.model = CN()
 _config.model.hidden_layer_list = [32,32,32] # Hidden layer list where each element is the number of neurons for that hidden layer of DFINE encoder/decoder. Please use [20,20,20,20] for nonlinear manifold simulations. Set to None to remove the manifold, reducing the model to a pure LDM
-_config.model.activation = None if _config.model.hidden_layer_list is None else 'tanh' # Activation function used in encoder and decoder layers
-_config.model.dim_y = 30 # Dimensionality of neural observations
-_config.model.dim_a = _config.model.dim_y if _config.model.hidden_layer_list is None else 16 # Dimensionality of manifold latent factor, a choice higher than dim_y (above) may lead to overfitting
-_config.model.dim_x = 16 # Dimensionality of dynamic latent factor, it's recommended to set it same as dim_a (above), please see Extended Data Fig. 8
-_config.model.dim_u = 1 # Dimensionality of control input
+_config.model.activation = 'tanh' # Activation function used in encoder and decoder layers. Set to None if hidden_layer_list is None.
+_config.model.dim_y = None # Dimensionality of neural observations
+_config.model.dim_a = None # Dimensionality of manifold latent factor, a choice higher than dim_y (above) may lead to overfitting
+_config.model.dim_x = None # Dimensionality of dynamic latent factor, it's recommended to set it same as dim_a (above), please see Extended Data Fig. 8
+_config.model.dim_u = None # Dimensionality of control input
 _config.model.init_A_scale = 1 # Initialization scale of LDM state transition matrix
 _config.model.init_B_scale = 1 # Initialization scale of LDM control-input matrix
 _config.model.init_C_scale = 1 # Initialization scale of LDM observation matrix
@@ -46,13 +46,13 @@ _config.model.hidden_layer_list_mapper = [20,20,20] # Hidden layer list for the 
 _config.model.activation_mapper = 'tanh' # Activation function used in mapper layers
 _config.model.which_behv_dims = [0,1,2,3] # List of dimensions of behavior data to be decoded by mapper, check for any dimensionality mismatch
 _config.model.behv_from_smooth = True # Boolean for whether to decode behavior from a_smooth
-_config.model.save_dir = os.path.join(os.getcwd(), 'results', 'train_logs', date.today().isoformat(), datetime.now().strftime('%H%M%S')) # Main save directory for DFINE results, plots and checkpoints
+_config.model.save_dir = os.path.join(os.getcwd(), 'results', 'train_logs', date.today().isoformat(), datetime.now().strftime('%H-%M-%S')) # Main save directory for DFINE results, plots and checkpoints
 _config.model.save_steps = 10 # Number of steps to save DFINE checkpoints
 
 # loss
 _config.loss = CN()
 _config.loss.scale_l2 = 2e-3 # L2 regularization loss scale (we recommend a grid-search for the best value, i.e., a grid of [1e-4, 5e-4, 1e-3, 2e-3]). Please use 0 for nonlinear manifold simulations as it leads to a better performance.
-_config.loss.scale_spectr_reg_B = 0.1
+_config.loss.scale_spectr_reg_B = 0
 _config.loss.steps_ahead = [1,2,3,4] # List of number of steps ahead for which DFINE is optimized. For unsupervised and supervised versions, default values are [1,2,3,4] and [1,2], respectively.
 _config.loss.scale_behv_recons = 20 # If _config.model.supervise_behv is True, scale for MSE of behavior reconstruction (We recommend a grid-search for the best value. It should be set to a large value).
 _config.loss.scale_forward_pred = 0 # Loss scale for forward prediction loss (output is predicted solely from the input)
@@ -106,21 +106,47 @@ def get_default_config():
     return _config.clone()
 
 
-def get_LDM_config(dim_x, dim_a, dim_u):
-    """
-    Gets default config that reduces DFINE to an LDM by removing the autoencoder
-    """
-    ldm_config = get_default_config()
-    ldm_config.model.dim_x = dim_x
-    ldm_config.model.dim_u = dim_u
-    ldm_config.model.dim_a = dim_a
-    ldm_config.model.dim_y = ldm_config.model.dim_a
-    ldm_config.model.hidden_layer_list = None
-    ldm_config.model.activation = None
-    return ldm_config
+
+def make_config(savedir_suffix='', **config_kwargs):
+    config = get_default_config()
+
+    #ensures timestamp is current, the one from get_default_config() corresponds to the time the module was initially loade
+    config.model.save_dir = os.path.join(os.getcwd(), 'results', 'train_logs', date.today().isoformat(), datetime.now().strftime('%H-%M-%S'))
+
+    #append any other info to the save directory
+    config.model.save_dir += savedir_suffix
+
+    config = update_config(config, config_kwargs, new_is_flat=True)
+
+    return config
 
 
-def update_config(config, new_config):
+def load_config(path, ckpt=None):
+    config = get_default_config()
+
+    if not path.endswith('config.yaml'):
+        path = os.path.join(path, 'config.yaml')
+
+    config.merge_from_file(path)
+    config.load.ckpt = ckpt or config.train.num_epochs
+    return config
+
+
+
+def make_savedir_suffix(config, **kwargs):
+    suffix = (f'_x={config["model.dim_x"]}'
+              f'_a={config["model.dim_a"]}'
+              f'_y={config["model.dim_y"]}'
+              f'_u={config["model.dim_u"]}'
+              f'_h={config["model.activation"]}-{"-".join(map(str,config["model.hidden_layer_list"]))}'
+              )
+    if kwargs:
+        suffix += '_' + '_'.join([f'{key}={val}' for key,val in kwargs.items()])
+    return suffix
+
+
+
+def update_config(config, new_config, new_is_flat=False):
     '''
     Updates the config
 
@@ -136,7 +162,7 @@ def update_config(config, new_config):
 
     # Flatten both configs
     flat_config = flatten_dict(config)
-    flat_new_config = flatten_dict(new_config)
+    flat_new_config = flatten_dict(new_config) if not new_is_flat else new_config
 
     # Update and unflatten the config to return
     flat_config.update(flat_new_config)

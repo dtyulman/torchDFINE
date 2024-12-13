@@ -74,8 +74,7 @@ class DFINE(nn.Module):
 
         # Initialize encoder and decoder(s)
         if self.config.model.hidden_layer_list is None:
-            # Make these a passthrough, thus setting the manifold latent to be equal to the observation
-            # and reducing the model to a simple LDM
+            # Make these a passthrough, thus setting the manifold latent to be equal to the observation and reducing the model to a simple LDM
             assert self.dim_y == self.dim_a, 'Manifold latent and observation dimensions must be equal if not using autoencoder'
             assert self.config.model.activation is None, 'Do not provide activation if not using autoencoder'
             self.encoder = self.decoder = lambda x: x
@@ -120,7 +119,6 @@ class DFINE(nn.Module):
             self.scale_behv_recons = self.config.loss.scale_behv_recons
         self.scale_l2 = self.config.loss.scale_l2
         self.scale_spectr_reg_B = self.config.loss.scale_spectr_reg_B
-        self.scale_forward_pred = self.config.loss.scale_forward_pred
 
 
     def _get_MLP(self, input_dim, output_dim, layer_list, activation_str='tanh'):
@@ -189,13 +187,7 @@ class DFINE(nn.Module):
         return A, B, C, D, W_log_diag, R_log_diag, mu_0, Lambda_0
 
 
-    def step(self, x, u=None, noise=False):
-        x_next, a_next = self.ldm.step(x, u, noise)
-        y_next = self.decoder(a_next)
-        return x_next, a_next, y_next
-
-
-    def forward(self, y, u=None, mask=None):
+    def forward(self, y, u, mask=None):
         '''
         Forward pass for DFINE Model
 
@@ -277,17 +269,11 @@ class DFINE(nn.Module):
         else:
             behv_hat = None
 
-        # Get filtered and smoothed estimates of neural observations. To perform k-step-ahead prediction,
-        # get_k_step_ahead_prediction(...) function should be called after the forward pass.
-        y_hat = self.decoder(a_hat.view(-1, self.dim_a))
-        y_pred = self.decoder(a_pred.reshape(-1, self.dim_a))
-        y_filter = self.decoder(a_filter.view(-1, self.dim_a))
-        y_smooth = self.decoder(a_smooth.view(-1, self.dim_a))
-
-        y_hat = y_hat.view(num_seq, -1, self.dim_y)
-        y_pred = y_pred.view(num_seq, -1, self.dim_y)
-        y_filter = y_filter.view(num_seq, -1, self.dim_y)
-        y_smooth = y_smooth.view(num_seq, -1, self.dim_y)
+        # Get filtered and smoothed estimates of neural observations
+        y_hat = self.decoder(a_hat.view(-1, self.dim_a)).view(num_seq, -1, self.dim_y)
+        y_pred = self.decoder(a_pred.reshape(-1, self.dim_a)).view(num_seq, -1, self.dim_y)
+        y_filter = self.decoder(a_filter.view(-1, self.dim_a)).view(num_seq, -1, self.dim_y)
+        y_smooth = self.decoder(a_smooth.view(-1, self.dim_a)).view(num_seq, -1, self.dim_y)
 
         # Dump inferrred latents, predictions and reconstructions to a dictionary
         model_vars = dict(a_hat=a_hat, a_pred=a_pred, a_filter=a_filter, a_smooth=a_smooth,
@@ -298,7 +284,7 @@ class DFINE(nn.Module):
         return model_vars
 
 
-    def get_k_step_ahead_prediction(self, model_vars, k, u=None):
+    def get_k_step_ahead_prediction(self, model_vars, k, u):
         '''
         Performs k-step ahead prediction of manifold latent factors, dynamic latent factors and neural observations.
 
@@ -334,10 +320,6 @@ class DFINE(nn.Module):
         # Get the required dimensions
         num_seq, num_steps, _ = x_filter.shape
 
-        # If control input is None, default to zeroes
-        if u is None:
-            u = torch.zeros(num_seq, num_steps, self.dim_u)
-
         # Check if shapes of A, B, and C are 4D where first 2 dimensions are (number of trials/time segments) and (number of steps)
         if len(A.shape) == 2:
             A = A.repeat(num_seq, num_steps, 1, 1)
@@ -349,44 +331,35 @@ class DFINE(nn.Module):
             D = D.repeat(num_seq, num_steps, 1, 1)
 
         # Here is where k-step ahead prediction is iteratively performed
-        x_pred_k = x_filter[:, :-k, ...] # [x_{k|0}, x_{(k+1)|1}, ..., x_{T|(T-k)}]
+        x_pred_k = x_filter[:, :-k, ...] #will contain [x_{k|0}, x_{(k+1)|1}, ..., x_{T|(T-k)}]
         for i in range(0, k):
             if i != k:
                 x_pred_k = (A[:, i:-(k-i), ...] @ x_pred_k.unsqueeze(dim=-1) + B[:, i:-(k-i), ...] @ u[:, i:-(k-i), ...].unsqueeze(dim=-1)).squeeze(dim=-1)
             else:
                 x_pred_k = (A[:, i:,       ...] @ x_pred_k.unsqueeze(dim=-1) + B[:, i:,       ...] @ u[:, i:,       ...].unsqueeze(dim=-1)).squeeze(dim=-1)
-        a_pred_k = (C[:, k:, ...] @ x_pred_k.unsqueeze(dim=-1)).squeeze(dim=-1)
 
+        a_pred_k = (C[:, k:, ...] @ x_pred_k.unsqueeze(dim=-1)).squeeze(dim=-1)
         if self.config.model.fit_D_matrix:
             a_pred_k += (D[:, k:, ...] @ u[:,k:,...].unsqueeze(dim=-1)).squeeze(dim=-1)
 
         # After obtaining k-step ahead predicted manifold latent factors, they're decoded to obtain k-step ahead predicted neural observations
-        y_pred_k = self.decoder(a_pred_k.view(-1, self.dim_a))
+        decoder = model_vars['decoder'] if 'decoder' in model_vars else self.decoder
+        y_pred_k = decoder(a_pred_k.view(-1, self.dim_a))
+        # y_pred_k = decoder(a_pred_k.reshape(-1, self.dim_a)).view(num_seq, -1, self.dim_y)
 
         # Reshape mean and variance back to 3D structure after decoder (num_seq, num_steps, dim_y)
         y_pred_k = y_pred_k.reshape(num_seq, -1, self.dim_y)
 
+        #sanity check
+        if k == 1:
+            assert (y_pred_k == model_vars['y_pred']).all()
+            assert (x_pred_k == model_vars['x_pred']).all()
+            assert (a_pred_k == model_vars['a_pred']).all()
+
         return y_pred_k, a_pred_k, x_pred_k
 
 
-    def get_forward_prediction(self, u):
-        num_seq, _, _ = u.shape
-        _, x_forward_pred, _, _ = self.ldm.compute_forward_prediction(u=u)
-        a_forward_pred = (self.ldm.C @ x_forward_pred.unsqueeze(dim=-1)).squeeze(dim=-1)
-
-        if self.config.model.fit_D_matrix:
-            a_forward_pred += (self.ldm.D @ u.unsqueeze(dim=-1)).squeeze(dim=-1)
-
-        # After obtaining k-step ahead predicted manifold latent factors, they're decoded forward predicted neural observations
-        y_forward_pred = self.decoder(a_forward_pred.view(-1, self.dim_a))
-
-        # Reshape mean and variance back to 3D structure after decoder (num_seq, num_steps, dim_y)
-        y_forward_pred = y_forward_pred.reshape(num_seq, -1, self.dim_y)
-
-        return y_forward_pred
-
-
-    def compute_loss(self, y, model_vars, u=None, mask=None, behv=None):
+    def compute_loss(self, y, u, model_vars, mask=None, behv=None):
         '''
         Computes k-step ahead predicted MSE loss, regularization loss and behavior reconstruction loss
         if supervised model is being trained.
@@ -421,8 +394,11 @@ class DFINE(nn.Module):
 
         # Iterate over multiple steps ahead
         k_steps_mse_sum = 0
-        for _, k in enumerate(self.config.loss.steps_ahead): #TODO this can be made O(k) faster by reusing previous k's computation
+        y_pred_all = {}
+        for k in self.config.loss.steps_ahead:
+            #TODO this can be made O(k) faster by reusing previous k's computation
             y_pred_k, _, _ = self.get_k_step_ahead_prediction(model_vars, k=k, u=u)
+            y_pred_all[k] = y_pred_k
             mse_pred = compute_mse(y_flat=y[:, k:, :].reshape(-1, self.dim_y),
                                    y_hat_flat=y_pred_k.reshape(-1, self.dim_y),
                                    mask_flat=mask[:, k:, :].reshape(-1,))
@@ -458,18 +434,7 @@ class DFINE(nn.Module):
             spectr_reg_B_loss = self.scale_spectr_reg_B * (torch.linalg.cond(self.ldm.B) - 1)
             loss_dict['spectr_reg_B_loss'] = spectr_reg_B_loss
 
-        # Forward prediction loss
-        forward_pred_loss = torch.tensor(0.)
-        if self.scale_forward_pred > 0:
-            y_forward_pred = self.get_forward_prediction(u=u)
-            mse_forward_pred = compute_mse(y_flat=y.reshape(-1, self.dim_y),
-                                   y_hat_flat=y_forward_pred.reshape(-1, self.dim_y),
-                                   mask_flat=mask.reshape(-1,))
-            forward_pred_loss = self.scale_forward_pred * mse_forward_pred
-        loss_dict['forward_pred_loss'] = forward_pred_loss
-
-
         # Final loss is summation of model loss (sum of k-step ahead MSEs), behavior reconstruction loss and L2 regularization loss
-        loss = model_loss + behv_loss + reg_loss + spectr_reg_B_loss + forward_pred_loss
+        loss = model_loss + behv_loss + reg_loss + spectr_reg_B_loss
         loss_dict['total_loss'] = loss
-        return loss, loss_dict
+        return loss, loss_dict, y_pred_all

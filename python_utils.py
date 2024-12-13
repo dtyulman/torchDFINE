@@ -5,34 +5,19 @@ Hamidreza Abbaspourazad*, Eray Erturk* and Maryam M. Shanechi
 Shanechi Lab, University of Southern California
 '''
 
-import timeit
-
 import torch
 import numpy as np
 
 
-class Timer:
-    """http://preshing.com/20110924/timing-your-code-using-pythons-with-statement/"""
-    def __init__(self, name='Timer', verbose=True):
-        self.name = name
-        self.verbose = verbose
-
-    def __enter__(self):
-        if self.verbose:
-            print( 'Starting {}...'.format(self.name) )
-        self.start = timeit.default_timer()
-        return self
-
-    def __exit__(self, *args):
-        self.end = timeit.default_timer()
-        self.elapsed = self.end - self.start
-        if self.verbose:
-            print( '{}: elapsed {} sec'.format(self.name, self.elapsed) )
+def linspace(start, end, steps, endpoint=True, **kwargs):
+    if endpoint:
+        return torch.linspace(start, end, steps, **kwargs)
+    return torch.linspace(start, end * (steps-1)/steps, steps, **kwargs)
 
 
 def verify_shape(tensor, shape):
     """
-    Verify that tensor.shape[i] == shape[i]. If shape[i] is None, set it to tensor.shape[i]
+    Verify that tensor.shape[i] == shape[i]. If shape[i] is None, set it to tensor.shape[i]. If tensor is None, return shape
     """
     if tensor is not None:
         assert len(tensor.shape) == len(shape), 'Number of tensor dims different from specified shape dims'
@@ -42,6 +27,32 @@ def verify_shape(tensor, shape):
             else:
                 assert shape[i] == tensor.shape[i], f'tensor.shape[{i}]={tensor.shape[i]} not equal shape[{i}]={shape[i]}'
     return shape
+
+
+def verify_output_dim(fn, in_dim, out_dim):
+    if fn is not None:
+        fn_out_dim = fn(torch.zeros(in_dim)).shape[-1] #give dummy input to fn to get output shape
+        if out_dim is None:
+            out_dim = fn_out_dim
+        else:
+            assert out_dim == fn_out_dim, f'fn_out_dim={fn_out_dim} not equal out_dim={out_dim}'
+    return out_dim
+
+
+def approx_indexof(x, x_list):
+    """
+    Inputs:
+        x: [v]. list, tuple, tensor, or array
+        x_list: [b,v]. tensor
+
+    Returns:
+        x_nearest: [v], value from x_list closest to x
+        idx: int, index of x_list with closest value to x
+    """
+    x = convert_to_tensor(x)
+    idx = (x_list - x).abs().mean(dim=1).argmin()
+    x_nearest = x_list[idx]
+    return x_nearest, idx
 
 
 def carry_to_device(data, device):
@@ -79,31 +90,24 @@ def carry_to_device(data, device):
 
 
 def convert_to_tensor(x):
-    '''
-    Converts numpy.ndarray to torch.Tensor
-
-    Parameters:
-    ------------
-    - x: np.ndarray, Numpy array to convert to torch.Tensor (if it's of type torch.Tensor already, it's returned without conversion)
-
-    Returns:
-    ------------
-    - y: torch.Tensor, Converted tensor
-    '''
-
     if isinstance(x, torch.Tensor):
-        y = x
+        return x
     elif isinstance(x, np.ndarray):
-        y = torch.tensor(x) # use np.ndarray as middle step so that function works with tf tensors as well
-    else:
-        assert False, 'Only Numpy array can be converted to tensor'
-    return y
+        return torch.from_numpy(x) # use np.ndarray as middle step so that function works with tf tensors as well
+    elif isinstance(x, (list, tuple, float, int)):
+        return torch.tensor(x)
+    raise ValueError('Invalid input')
 
 
 def convert_to_numpy(x):
-    if isinstance(x, torch.Tensor):
+    if isinstance(x, np.ndarray):
+        return x
+    elif isinstance(x, torch.Tensor):
         return x.detach().numpy()
-    return x
+    elif isinstance(x, (list, tuple, float, int)):
+        return np.array(x)
+    raise ValueError('Invalid input')
+
 
 def flatten_dict(dictionary, level=[]):
     '''

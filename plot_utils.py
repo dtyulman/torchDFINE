@@ -1,5 +1,6 @@
 import torch
 import numpy as np
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 
@@ -36,7 +37,7 @@ def plot_vs_time(seq, target=None, t_on=None, t_off=None, mode='tiled', max_N=10
         ax.set_xlabel('Time')
 
     for r,ax in enumerate(np.atleast_2d(axs)[:,0]):
-        dimnum = f'_{r}' if mode == 'tiled' else ''
+        dimnum = f'_{r}' if mode == 'tiled' and N>1 else ''
         ax.set_ylabel(f'${varname}{dimnum}(t)$')
 
     fig.tight_layout()
@@ -45,6 +46,7 @@ def plot_vs_time(seq, target=None, t_on=None, t_off=None, mode='tiled', max_N=10
 
 
 def _plot_tiled(seq, target=None, ax=None, legend=True, color=None, label=None):
+    """Helper for plot_vs_time"""
     B,T,N = seq.shape
 
     fig, ax = _prep_axes(ax, nrows=N, ncols=B, sharex=True, sharey='row', squeeze=False, figsize=(1.5*B+1, 0.7*N+1))
@@ -64,6 +66,7 @@ def _plot_tiled(seq, target=None, ax=None, legend=True, color=None, label=None):
 
 
 def _plot_overlaid(seq, target=None, ax=None, legend=True):
+    """Helper for plot_vs_time"""
     B,T,N = seq.shape
 
     fig, ax = _prep_axes(ax, nrows=1, ncols=B, sharex=True, sharey='row', squeeze=False)
@@ -139,6 +142,21 @@ def plot_parametric(seq, t_on=None, t_off=None, mode='line', size=None, cbar=Tru
 
 
 
+def plot_heatmap(M, h_axis, v_axis, vmin=0, vmax=1, cmap='Reds'):
+    #fix cmap
+    cmap = mpl.colormaps[cmap]
+    cmap.set_over('grey')
+
+    #plot
+    fig, ax = plt.subplots()
+    pcm = ax.pcolormesh(h_axis, v_axis, M.T, vmin=vmin, vmax=vmax, cmap=cmap)
+    ax.axis('equal')
+    plt.colorbar(pcm, ax=ax, extend='max' if vmax is not None else None)
+
+    return fig, ax
+
+
+
 def plot_eigvals(mat, ax=None, title=''):
     fig, ax = _prep_axes(ax)
     mat = _prep_mat(mat)
@@ -156,20 +174,30 @@ def plot_eigvals(mat, ax=None, title=''):
     ax.set_title(title)
     return fig, ax
 
+
+
 ###########
 # Helpers #
 ###########
 def _prep_axes(ax=None, nrows=1, ncols=1, **kwargs):
     if ax is None:
         fig, ax = plt.subplots(nrows, ncols, **kwargs)
+
     else:
-        if ncols>1 or nrows>1: #sanity check if specifying nrows or ncols
+        # unsqueeze ax into an array
+        if not kwargs['squeeze']:
+            ax = np.atleast_2d(ax)
+
+        # sanity check if specifying nrows or ncols
+        if ncols>1 or nrows>1:
             assert len(ax.flatten()) == nrows*ncols
 
+        # get figure instance
         if isinstance(ax, np.ndarray):
             fig = ax.flatten()[0].get_figure()
         else:
             fig = ax.get_figure()
+
     return fig, ax
 
 

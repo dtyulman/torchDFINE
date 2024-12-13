@@ -11,6 +11,33 @@ from scipy.stats import pearsonr
 from nn import compute_mse
 
 
+def compute_control_error(output, target, t=-1):
+    """
+    Inputs:
+        output: [b,t,v]
+        target: [b,v]
+        t: tuple (start_idx, end_idx) or idx or None. Average over these time indices before computing error
+    Returns
+        normalized_err: [b]. Error for each item in the batch, normalized by the distance from initialization to target
+    """
+    init_err = (output[:,0,:] - target).norm(dim=-1) #([b,v]-[b,v]) -> [b]
+
+    if t is not None:
+        if isinstance(t, int):
+            output = output[:, t, :].unsqueeze(1)
+        elif len(t) == 2:
+            output = output[:, t[0]:t[1], :]
+        else:
+            raise ValueError
+
+    avg_output = output.mean(dim=1) #[b,t,v] -> [b,v]
+    err = (avg_output - target).norm(dim=-1) #([b,v]-[b,v]) -> [b]
+
+    normalized_err = err / init_err
+    return normalized_err #[b]
+
+
+
 def get_nrmse_error(y, y_hat, version_calculation='modified'):
     '''
     Computes normalized root-mean-squared error between two 3D tensors. Note that this operation is not symmetric.
@@ -52,10 +79,12 @@ def get_nrmse_error(y, y_hat, version_calculation='modified'):
         y_resh = torch.reshape(y, (-1, y.shape[2]))
         var_y = torch.mean(torch.square(y_resh - torch.mean(y_resh, dim=0)), dim=0)
         var_y = torch.tile(var_y.unsqueeze(dim=0), (y.shape[1], 1))
+
     normalized_error = torch.mean((torch.sqrt(recons_error) / torch.sqrt(var_y)), dim=0) # mean across batches
     normalized_error_mean = torch.mean(normalized_error)
 
     return normalized_error, normalized_error_mean
+
 
 
 def get_rmse_error(y, y_hat):
@@ -87,6 +116,7 @@ def get_rmse_error(y, y_hat):
     rmse = torch.sqrt(torch.mean(torch.square(y-y_hat), dim=0))
     rmse_mean = torch.nanmean(rmse.nan_to_num(posinf=torch.nan, neginf=torch.nan)) # for stability purposes
     return rmse, rmse_mean
+
 
 
 def get_pearson_cc(y, y_hat):
@@ -183,9 +213,12 @@ def mse_from_encoding_dict(encoding_dict, steps_ahead):
 
 
 
-def generate_input_noise(dim_u, num_steps, num_seqs=1, lo=-1, hi=1, levels=2):
-    if levels == 'inf':
+def generate_input_noise(dim_u, num_seqs, num_steps, lo=-1, hi=1, levels=2):
+    if levels == 'inf' or levels == float('inf'):
         u = (hi-lo) * torch.rand(num_seqs, num_steps, dim_u) + lo
+    elif levels == 1:
+        assert lo == hi
+        u = lo*torch.ones(num_seqs, num_steps, dim_u)
     else:
         u = (hi-lo)/(levels-1) * torch.randint(levels, (num_seqs, num_steps, dim_u)) + lo
-    return u
+    return u #[b,t,u]

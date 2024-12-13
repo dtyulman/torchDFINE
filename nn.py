@@ -80,6 +80,7 @@ def get_activation_function(activation_str):
     elif activation_str.lower() == 'linear':
         return lambda x: x
 
+
 def get_kernel_initializer_function(kernel_initializer_str):
     '''
     Returns kernel initialization function given the kernel initialization function's name
