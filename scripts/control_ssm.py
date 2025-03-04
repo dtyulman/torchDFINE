@@ -16,7 +16,7 @@ from python_utils import convert_to_tensor, approx_indexof
 
 np.set_printoptions(suppress=True)
 torch.set_printoptions(sci_mode=False)
-VERBOSE = True #global toggle for printing/plotting. Set to false if running on cluster
+VERBOSE = True #global toggle for printing/plotting
 
 #%% Make a ground-truth SSM
 ssm_config = {'manifold': 'linear',

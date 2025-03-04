@@ -7,7 +7,7 @@ import matplotlib as mpl
 import numpy as np
 import control
 
-from python_utils import verify_shape, verify_output_dim, linspace
+from python_utils import verify_shape, verify_output_dim, linspace, convert_to_numpy, convert_to_tensor, WrapperModule
 from time_series_utils import generate_input_noise, compute_control_error
 from plot_utils import plot_parametric, plot_vs_time, plot_heatmap
 from DFINE import DFINE
@@ -79,63 +79,17 @@ class NonlinearStateSpaceModel():
 
             '--\n'
 
-            f'{self.f}\n'
+            f'f={self.f}\n'
             f'S={self.S_distr.covariance_matrix.numpy() if self.S_distr is not None else 0}\n'
             )
 
 
     def is_observable(self, verbose=False, method='direct'):
-        """
-        method:
-            'direct' - builds controllability matrix and computes its rank
-            'hautus' - uses Hautus Lemma https://en.wikipedia.org/wiki/Hautus_lemma
-        """
-        if method == 'direct':
-            obsv = control.obsv(self.A.numpy(), self.C.numpy())
-            rank = np.linalg.matrix_rank(obsv)
-            result = rank >= self.dim_x
-            if verbose:
-                print(f'{"" if result else "not "}observable.'.capitalize(),
-                      f'rank(O)={rank} {">=" if result else "<"} n={self.dim_x}')
-            return result
-
-        elif method == 'hautus':
-            eigvals = torch.linalg.eigvals(self.A)
-            for lambda_i in eigvals:
-                matrix = np.vstack((lambda_i * np.eye(self.dim_x) - self.A.numpy(), self.C.numpy()))
-                if np.linalg.matrix_rank(matrix) < self.dim_x:
-                    return False
-            return True
-
-        else:
-            raise ValueError(f'Invalid method: {method}')
+        return is_observable(self.A, self.C, verbose=verbose, method=method)
 
 
     def is_controllable(self, verbose=False, method='direct'):
-        """
-        method:
-            'direct' - builds controllability matrix and computes its rank
-            'hautus' - uses Hautus Lemma https://en.wikipedia.org/wiki/Hautus_lemma
-        """
-        if method == 'direct':
-            ctrb = control.ctrb(self.A.numpy(), self.B.numpy())
-            rank = np.linalg.matrix_rank(ctrb)
-            result = rank >= self.dim_x
-            if verbose:
-                print(f'{"" if result else "not "}controllable.'.capitalize(),
-                      f'rank(CC)={rank} {">=" if result else "<"} n={self.dim_x}')
-            return result
-
-        elif method == 'hautus':
-            eigvals = torch.linalg.eigvals(self.A)
-            for lambda_i in eigvals:
-                matrix = np.hstack((lambda_i * np.eye(self.dim_x) - self.A.numpy(), self.B.numpy()))
-                if np.linalg.matrix_rank(matrix) < self.dim_x:
-                    return False
-            return True
-
-        else:
-            raise ValueError(f'Invalid method: {method}')
+        return is_controllable(self.A, self.B, verbose=verbose, method=method)
 
 
     def is_output_controllable(self, verbose=False):
@@ -486,7 +440,6 @@ class LinearManifold(NonlinearEmbeddingBase):
 
 
 
-
 ###########
 # Helpers #
 ###########
@@ -500,6 +453,129 @@ def make_noise_distr(M, dim):
     return M
 
 
+def is_observable(A, C, verbose=False, method='direct', return_mat=False):
+    """
+    method:
+        'direct' - builds controllability matrix and computes its rank
+        'hautus' - uses Hautus Lemma https://en.wikipedia.org/wiki/Hautus_lemma
+    """
+    A = convert_to_numpy(A)
+    C = convert_to_numpy(C)
+    dim_a, dim_x = verify_shape(C, [None, None])
+    verify_shape(A, [dim_x, dim_x])
+
+    if method == 'direct':
+        O = control.obsv(A, C)
+        rank = np.linalg.matrix_rank(O)
+        is_observable = rank >= dim_x
+        if verbose:
+            print(f'{"" if is_observable else "not "}observable,'.capitalize(),
+                  f'rank(O)={rank} {">=" if is_observable else "<"} n={dim_x},',
+                  f'K(O)={np.linalg.cond(O):.2f}')
+
+    elif method == 'hautus':
+        eigvals = np.linalg.eigvals(A)
+        is_observable = True
+        for lambda_i in eigvals:
+            M = np.vstack((lambda_i * np.eye(dim_x) - A, C))
+            if np.linalg.matrix_rank(M) < dim_x:
+                is_observable = False
+                break
+    else:
+        raise ValueError(f'Invalid method: {method}')
+
+    if return_mat:
+        return is_observable, O
+    return is_observable
+
+
+def is_controllable(A, B, verbose=False, method='direct', return_mat=False):
+    """
+    method:
+        'direct' - builds controllability matrix and computes its rank
+        'hautus' - uses Hautus Lemma https://en.wikipedia.org/wiki/Hautus_lemma
+    """
+    A = convert_to_numpy(A)
+    B = convert_to_numpy(B)
+    dim_x, dim_u = verify_shape(B, [None, None])
+    verify_shape(A, [dim_x, dim_x])
+
+    if method == 'direct':
+        CC = control.ctrb(A, B)
+        rank = np.linalg.matrix_rank(CC)
+        is_controllable = rank >= dim_x
+        if verbose:
+            print(f'{"" if is_controllable else "not "}controllable,'.capitalize(),
+                  f'rank(CC)={rank} {">=" if is_controllable else "<"} nx={dim_x}',
+                  f', K(CC)={np.linalg.cond(CC):.2f}' if is_controllable else '')
+
+    elif method == 'hautus':
+        eigvals = np.linalg.eigvals(A)
+        is_controllable = True
+        for lambda_i in eigvals:
+            M = np.hstack((lambda_i * np.eye(dim_x) - A, B))
+            if np.linalg.matrix_rank(M) < dim_x:
+                is_controllable = False
+                break
+    else:
+        raise ValueError(f'Invalid method: {method}')
+
+    if return_mat:
+        return is_controllable, CC
+    return is_controllable
+
+
+
+def is_output_controllable(A, B, C, verbose=False, return_mat=False):
+    _, CC = is_controllable(A, B, return_mat=True)
+
+    C = convert_to_numpy(C)
+    dim_a, dim_x = verify_shape(C, [None, A.shape[0]])
+
+    CO = C @ CC
+    rank = np.linalg.matrix_rank(CO)
+    is_output_controllable = rank >= dim_a
+
+    if verbose:
+        print(f'{"" if is_output_controllable else "not "}output controllable,'.capitalize(),
+              f'rank(CO)={rank} {">=" if is_output_controllable else "<"} na={dim_a}',
+              f', K(CO)={np.linalg.cond(CO):.2f}' if is_output_controllable else '')
+
+    if return_mat:
+        return is_output_controllable, CO
+    return is_output_controllable
+
+
+@torch.no_grad()
+def is_in_controllable_subspace(x, A,B, rank=None):
+    CC = torch.hstack([torch.matrix_power(A, i) @ B for i in range(A.shape[0])]) #[x,x*u]
+    rank = torch.linalg.matrix_rank(CC) if rank is None else rank
+
+    U, S, Vh = torch.linalg.svd(CC, full_matrices=False) #[x,x],[x],[x,x*u] (full_matrices=True gives Vh [x*u,x*u])
+    Ur = U[:, :rank]
+    x_proj = (Ur @ (Ur.T @ x.unsqueeze(-1))).squeeze(-1)
+
+    return x_proj, Ur
+
+
+def get_ldm_properties(A,B,C, verbose=True, return_mats=False):
+    result = {}
+    if return_mats:
+        result['is_observable'], result['O'] = is_observable(A, C, verbose=verbose, return_mat=return_mats)
+        result['is_controllable'], result['CC'] = is_controllable(A, B, verbose=verbose, return_mat=return_mats)
+        result['is_output_controllable'], result['CO'] = is_output_controllable(A, B, C, verbose=verbose, return_mat=return_mats)
+    else:
+        result['is_observable'] = is_observable(A, C, verbose=verbose, return_mat=return_mats)
+        result['is_controllable'] = is_controllable(A, B, verbose=verbose, return_mat=return_mats)
+        result['is_output_controllable'] = is_output_controllable(A, B, C, verbose=verbose, return_mat=return_mats)
+    return result
+
+
+##############
+# Instantion #
+##############
+
+@torch.no_grad()
 def make_ssm(spec, **kwargs):
     # https://realpython.com/factory-method-python/
     if spec == 'ring':
@@ -554,10 +630,10 @@ def make_ssm(spec, **kwargs):
     elif isinstance(spec, DFINE):
         assert len(kwargs) == 0, 'Do not specify additional kwargs' #TODO: allow overwriting via kwargs?
         Q,R = spec.ldm._get_covariance_matrices()
-        params = dict(A = spec.ldm.A,
-                      B = spec.ldm.B,
-                      C = spec.ldm.C,
-                      f = spec.decoder,
+        params = dict(A = spec.ldm.A.detach().clone(),
+                      B = spec.ldm.B.detach().clone(),
+                      C = spec.ldm.C.detach().clone(),
+                      f = deepcopy(spec.decoder),
                       Q = Q,
                       R = R,
                       S = None)
@@ -568,33 +644,28 @@ def make_ssm(spec, **kwargs):
 
 
 def make_dfine_from_ssm(ssm, dfine):
-    # class WrapperModule(torch.nn.Module):
-    #     def __init__(self, f):
-    #         super().__init__()
-    #         self.f = f
-
-    #     def forward(self, *args, **kwargs):
-    #         return self.f(*args, **kwargs)
-
     assert dfine.ldm.dim_x == ssm.dim_x
     assert dfine.ldm.dim_a == ssm.dim_a
-    assert dfine.ldm.dim_y == ssm.dim_y
+    assert dfine.dim_y == ssm.dim_y
     assert dfine.ldm.dim_u == ssm.dim_u
 
     dfine = deepcopy(dfine)
-    with torch.no_grad:
+    with torch.no_grad():
         dfine.ldm.A.data = ssm.A
         dfine.ldm.B.data = ssm.B
         dfine.ldm.C.data = ssm.C
+
         dfine.ldm.W_log_diag.data = torch.diag(torch.log(ssm.Q_distr.covariance_matrix))
         dfine.ldm.R_log_diag.data = torch.diag(torch.log(ssm.R_distr.covariance_matrix))
-        #TODO: don't remember whether/why this was necessary, remove if not. Maybe to register it for saving the model
-        # dfine.decoder = WrapperModule(ssm.f)
-        # dfine.encoder = WrapperModule(ssm.f.inv)
-        dfine.decoder = ssm.f
-        dfine.encoder = ssm.f.inv
+
+        dfine.decoder = WrapperModule(ssm.f)
+        dfine.encoder = WrapperModule(ssm.f.inv)
     return dfine
 
+
+########
+# Data #
+########
 
 def generate_dataset(ssm, num_seqs, num_steps, x0_min=None, x0_max=None, **noise_params):
     u_train = generate_input_noise(ssm.dim_u, num_seqs, num_steps, **noise_params) #[b,t,u]

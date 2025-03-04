@@ -5,9 +5,10 @@ Hamidreza Abbaspourazad*, Eray Erturk* and Maryam M. Shanechi
 Shanechi Lab, University of Southern California
 '''
 
-from torch.utils.data import Dataset, IterableDataset
 import torch
+from torch.utils.data import Dataset, IterableDataset
 
+from data import RNN
 
 class DFINEDataset(Dataset):
     '''
@@ -66,45 +67,53 @@ class DFINEDataset(Dataset):
 
 
 class ControlledDFINEDataset(IterableDataset):
-    def __init__(self, controller, R=1, xmin=-10, xmax=10, umin=-float('inf'), umax=float('inf'), num_steps=50, length=1):
-       self.controller = controller
-       self.R = R #TODO: set this dynamically? anneal?
-       self.xmin = xmin
-       self.xmax = xmax
-       self.umin = umin
-       self.umax = umax
+    def __init__(self, closed_loop, get_targets, num_steps):
+       self.closed_loop = closed_loop
+       self.get_targets = get_targets
        self.num_steps = num_steps
 
-       self._length = length #used for compatibility with the epochs/batches framework
-       self.outputs = None #store latest output of __next__ internally for analysis/debugging/etc
+
+    def _update_dataset(self):
+        self.y_target, self.plant_init, self.aux_inputs = self.get_targets()
+        self.closed_loop.controller.K = self.closed_loop.controller.compute_lqr_gain(horizon=self.num_steps)
+        self.closed_loop.run(y_target=self.y_target, plant_init=self.plant_init,
+                             aux_inputs=self.aux_inputs, num_steps=self.num_steps)
+
+        self.y = self.closed_loop.model.y #[b,t,y] true observation (logged by the model class for consistency)
+        self.u = self.closed_loop.model.u #[b,t,u] input to plant, computed by model/controller
+        self.y_hat = self.closed_loop.model.y_hat #[b,t,y] estimated observation
+
+
+    def __len__(self):
+        return self.get_targets.num_targets #[b]
 
 
     def __iter__(self):
-        self._num_seqs_generated = 0
-        return self
+        self._update_dataset()
+        behv = torch.zeros(self.y.shape[:-1]).unsqueeze(dim=-1)
+        mask = torch.ones(self.y.shape[:-1]).unsqueeze(dim=-1)
+        yield from zip(self.y, self.u, behv, mask, self.y_target, self.y_hat)
 
 
-    # def __len__(self):
-    #     return self._length
 
+class TargetGenerator():
+    def __init__(self, num_targets, rnn, rnn_train_data):
+        self.num_targets = num_targets
+        self.rnn = rnn
+        self.rnn_train_data = rnn_train_data
+        self._verbose = True
 
-    def __next__(self):
-        if(self._num_seqs_generated >= self._length):
-            raise StopIteration
-        self._num_seqs_generated += 1
+    def __call__(self):
+        #get num_targets random indices from rnn_train_data.targets
+        idx = torch.randint(len(self.rnn_train_data), (self.num_targets,))
+        z_target = self.rnn_train_data.targets[idx] #targets in z space
 
-        # Pick a random initial and target point
-        x0   = torch.rand(self.controller.model.dim_x)*(self.xmax-self.xmin) + self.xmin
-        x_ss = torch.rand(self.controller.model.dim_x)*(self.xmax-self.xmin) + self.xmin
+        #convert targets to observation space y (either h or z, depending on rnn.obs_fn)
+        y_target, _, _ = RNN.make_y_target(self.rnn, z_target, h_target_mode='unperturbed',
+                                           num_steps=self.rnn_train_data.num_steps, verbose=self._verbose)
+        self._verbose = False
 
-        # Run the contoller using the current model
-        _, a_ss, y_ss = self.controller.generate_observation(x_ss)
-        self.outputs = self.controller.run_control(y_ss, x_ss=x_ss, a_ss=a_ss, x0=x0, umin=self.umin, umax=self.umax, R=self.R, num_steps=self.num_steps)
-        self.outputs['x_ss'] = x_ss
-        self.outputs['a_ss'] = a_ss
-
-        # Return the trajectory for training the next iteration of the model
-        y, u = self.outputs['y'], self.outputs['u']
-        behv = torch.zeros(y.shape[:-1]).unsqueeze(dim=-1)
-        mask = torch.ones(y.shape[:-1]).unsqueeze(dim=-1)
-        return y.squeeze(0), u.squeeze(0), behv.squeeze(0), mask.squeeze(0)
+        #not used, but can be useful in the future if need to specify task input or specific init
+        plant_init = None
+        aux_inputs = None
+        return y_target, plant_init, aux_inputs

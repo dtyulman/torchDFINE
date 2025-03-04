@@ -51,10 +51,12 @@ _config.model.save_steps = 10 # Number of steps to save DFINE checkpoints
 
 # loss
 _config.loss = CN()
-_config.loss.scale_l2 = 2e-3 # L2 regularization loss scale (we recommend a grid-search for the best value, i.e., a grid of [1e-4, 5e-4, 1e-3, 2e-3]). Please use 0 for nonlinear manifold simulations as it leads to a better performance.
-_config.loss.scale_spectr_reg_B = 0
 _config.loss.steps_ahead = [1,2,3,4] # List of number of steps ahead for which DFINE is optimized. For unsupervised and supervised versions, default values are [1,2,3,4] and [1,2], respectively.
+_config.loss.scale_steps_ahead = [1.,1.,1.,1.] #relative weighting of each step ahead. Can be zero to calculate that step-ahead prediction but not include it in the final loss
+_config.loss.scale_l2 = 2e-3 # L2 regularization loss scale (we recommend a grid-search for the best value, i.e., a grid of [1e-4, 5e-4, 1e-3, 2e-3]). Please use 0 for nonlinear manifold simulations as it leads to a better performance.
+_config.loss.scale_control_loss = 0
 _config.loss.scale_behv_recons = 20 # If _config.model.supervise_behv is True, scale for MSE of behavior reconstruction (We recommend a grid-search for the best value. It should be set to a large value).
+_config.loss.scale_spectr_reg_B = 0
 _config.loss.scale_forward_pred = 0 # Loss scale for forward prediction loss (output is predicted solely from the input)
 
 # training
@@ -91,7 +93,7 @@ _config.lr.explr.step_size = 15 # Steps to decay the learning rate, becomes pure
 # optimizer
 _config.optim = CN()
 _config.optim.eps = 1e-8 # Epsilon for Adam optimizer
-_config.optim.grad_clip = 1 # Gradient clipping norm
+_config.optim.grad_clip = 1. # Gradient clipping norm
 
 
 def get_default_config():
@@ -110,13 +112,15 @@ def get_default_config():
 def make_config(savedir_suffix='', **config_kwargs):
     config = get_default_config()
 
-    #ensures timestamp is current, the one from get_default_config() corresponds to the time the module was initially loade
+    #ensures timestamp is current, the one from get_default_config() corresponds to the time the module was initially loaded
     config.model.save_dir = os.path.join(os.getcwd(), 'results', 'train_logs', date.today().isoformat(), datetime.now().strftime('%H-%M-%S'))
 
     #append any other info to the save directory
     config.model.save_dir += savedir_suffix
 
     config = update_config(config, config_kwargs, new_is_flat=True)
+    if config.model.dim_a is None:
+        config.model.dim_a = config.model.dim_x
 
     return config
 
@@ -134,11 +138,11 @@ def load_config(path, ckpt=None):
 
 
 def make_savedir_suffix(config, **kwargs):
-    suffix = (f'_x={config["model.dim_x"]}'
-              f'_a={config["model.dim_a"]}'
-              f'_y={config["model.dim_y"]}'
-              f'_u={config["model.dim_u"]}'
-              f'_h={config["model.activation"]}-{"-".join(map(str,config["model.hidden_layer_list"]))}'
+    suffix = (f'_nx={config["model.dim_x"]}'
+              f'_na={config["model.dim_a"]}'
+              f'_ny={config["model.dim_y"]}'
+              f'_nu={config["model.dim_u"]}'
+              f'_nh={config["model.activation"]}-{"-".join(map(str,config["model.hidden_layer_list"]))}'
               )
     if kwargs:
         suffix += '_' + '_'.join([f'{key}={val}' for key,val in kwargs.items()])

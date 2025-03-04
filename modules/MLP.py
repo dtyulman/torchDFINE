@@ -10,8 +10,8 @@ import torch.nn as nn
 
 class MLP(nn.Module):
     '''
-    MLP Module for DFINE encoder and decoder in addition to the mapper to behavior for supervised DFINE. 
-    Encoder encodes the high-dimensional neural observations into low-dimensional manifold latent factors space 
+    MLP Module for DFINE encoder and decoder in addition to the mapper to behavior for supervised DFINE.
+    Encoder encodes the high-dimensional neural observations into low-dimensional manifold latent factors space
     and decoder decodes the manifold latent factors into high-dimensional neural observations.
     '''
 
@@ -29,46 +29,55 @@ class MLP(nn.Module):
         '''
 
         super(MLP, self).__init__()
-        
+
         self.input_dim = kwargs.pop('input_dim', None)
         self.output_dim = kwargs.pop('output_dim', None)
         self.layer_list = kwargs.pop('layer_list', None)
         self.kernel_initializer_fn = kwargs.pop('kernel_initializer_fn', nn.init.xavier_normal_)
-        self.activation_fn = kwargs.pop('activation_fn', nn.Tanh)
+        self.activation_fn = kwargs.pop('activation_fn', nn.Tanh())
 
-        # Create the ModuleList to stack the hidden layers 
-        self.layers = nn.ModuleList()
-        
         # Create the hidden layers and initialize their weights based on desired initialization function
+        bias = False #False for debugging computation graph
+        ff = []
         current_dim = self.input_dim
         for i, dim in enumerate(self.layer_list):
-            self.layers.append(nn.Linear(current_dim, dim))
-            self.kernel_initializer_fn(self.layers[i].weight)
+            layer = nn.Linear(current_dim, dim, bias=bias)
+            self.kernel_initializer_fn(layer.weight.data)
             current_dim = dim
+            ff.append(layer)
+            ff.append(self.activation_fn)
 
-        # Create output layer and initialize their weights based on desired initialization function
-        self.out_layer = nn.Linear(current_dim, self.output_dim)
-        self.kernel_initializer_fn(self.out_layer.weight)
+        out_layer = nn.Linear(current_dim, self.output_dim, bias=bias)
+        self.kernel_initializer_fn(out_layer.weight.data)
+        ff.append(out_layer)
 
-        
+        self.layers = nn.Sequential(*ff)
+
+
     def forward(self, inp):
         '''
-        Forward pass function for MLP Module 
+        Forward pass function for MLP Module
 
-        Parameters: 
+        Parameters:
         ------------
         inp: torch.Tensor, shape: (num_seq * num_steps, input_dim), Flattened batch of inputs
 
-        Returns: 
+        Returns:
         ------------
         out: torch.Tensor, shape: (num_seq * num_steps, output_dim),Flattened batch of outputs
         '''
 
-        # Push neural observations thru each hidden layer
-        for layer in self.layers:
-            inp = layer(inp)
-            inp = self.activation_fn(inp)
-        
-        # Obtain the output
-        out = self.out_layer(inp)
+        #although input to linear layer is shape (*,H) manually reshaping prevents
+        #creating UnsafeView's for some reason...
+        reshape_flag = False
+        if len(inp.shape)>2:
+            shape = inp.shape
+            inp = inp.reshape(-1, inp.shape[-1])
+            reshape_flag = True
+
+        out = self.layers(inp)
+
+        if reshape_flag:
+            out = out.reshape(*shape[:-1], -1)
+
         return out

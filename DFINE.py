@@ -10,7 +10,8 @@ from modules.MLP import MLP
 from nn import get_kernel_initializer_function, compute_mse, get_activation_function
 
 import torch
-import torch.nn as nn
+from torch import nn
+from torch.nn import functional as F
 
 
 class DFINE(nn.Module):
@@ -118,7 +119,11 @@ class DFINE(nn.Module):
         if self.config.model.supervise_behv:
             self.scale_behv_recons = self.config.loss.scale_behv_recons
         self.scale_l2 = self.config.loss.scale_l2
+        self.scale_control_loss = self.config.loss.scale_control_loss
         self.scale_spectr_reg_B = self.config.loss.scale_spectr_reg_B
+
+        assert len(self.config.loss.steps_ahead) == len(self.config.loss.scale_steps_ahead)
+
 
 
     def _get_MLP(self, input_dim, output_dim, layer_list, activation_str='tanh'):
@@ -233,21 +238,14 @@ class DFINE(nn.Module):
         if mask is None:
             mask = torch.ones(y.shape[:-1]).unsqueeze(dim=-1)
 
-        # Get the encoded low-dimensional manifold factors (project via nonlinear manifold embedding) -> the outputs are (num_seq * num_steps, dim_a)
-        a_hat = self.encoder(y.view(num_seq*num_steps, self.dim_y))
-
-        # Reshape the manifold latent factors back into 3D structure (num_seq, num_steps, dim_a)
-        a_hat = a_hat.view(num_seq, num_steps, self.dim_a)
+        # Get the encoded low-dimensional manifold factors (project via nonlinear manifold embedding)
+        a_hat = self.encoder(y)
 
         # Run LDM to infer filtered and smoothed dynamic latent factors
         x_pred, x_filter, x_smooth, Lambda_pred, Lambda_filter, Lambda_smooth = self.ldm(a=a_hat, u=u, mask=mask, do_smoothing=True)
-        A = self.ldm.A.repeat(num_seq, num_steps, 1, 1)
-        B = self.ldm.B.repeat(num_seq, num_steps, 1, 1)
-        C = self.ldm.C.repeat(num_seq, num_steps, 1, 1)
-        D = self.ldm.D.repeat(num_seq, num_steps, 1, 1)
-        a_pred = (C @ x_pred.unsqueeze(dim=-1)).squeeze(dim=-1) #  (num_seq, num_steps, dim_a, dim_x) x (num_seq, num_steps, dim_x, 1) --> (num_seq, num_steps, dim_a)
-        a_filter = (C @ x_filter.unsqueeze(dim=-1)).squeeze(dim=-1) #  (num_seq, num_steps, dim_a, dim_x) x (num_seq, num_steps, dim_x, 1) --> (num_seq, num_steps, dim_a)
-        a_smooth = (C @ x_smooth.unsqueeze(dim=-1)).squeeze(dim=-1) #  (num_seq, num_steps, dim_a, dim_x) x (num_seq, num_steps, dim_x, 1) --> (num_seq, num_steps, dim_a)
+        a_pred = (self.ldm.C @ x_pred.unsqueeze(dim=-1)).squeeze(dim=-1) #  (num_seq, num_steps, dim_a, dim_x) x (num_seq, num_steps, dim_x, 1) --> (num_seq, num_steps, dim_a)
+        a_filter = (self.ldm.C @ x_filter.unsqueeze(dim=-1)).squeeze(dim=-1) #  (num_seq, num_steps, dim_a, dim_x) x (num_seq, num_steps, dim_x, 1) --> (num_seq, num_steps, dim_a)
+        a_smooth = (self.ldm.C @ x_smooth.unsqueeze(dim=-1)).squeeze(dim=-1) #  (num_seq, num_steps, dim_a, dim_x) x (num_seq, num_steps, dim_x, 1) --> (num_seq, num_steps, dim_a)
 
         # Remove the last timestep of predictions since it's T+1|T, which is not of interest to us
         x_pred = x_pred[:, :-1, :]
@@ -255,32 +253,32 @@ class DFINE(nn.Module):
         a_pred = a_pred[:, :-1, :]
 
         if self.config.model.fit_D_matrix:
-            a_pred += (D[:,1:,...] @ u[:,1:,...].unsqueeze(dim=-1)).squeeze(dim=-1) # first index of a_pred is a_{1|0}, therefore, it has to be summed with u_{1}
-            a_filter += (D @ u.unsqueeze(dim=-1)).squeeze(dim=-1)
-            a_smooth += (D @ u.unsqueeze(dim=-1)).squeeze(dim=-1)
+            a_pred = a_pred + (self.ldm.D @ u[:,1:,...].unsqueeze(dim=-1)).squeeze(dim=-1) #first index of a_pred is a_{1|0}, therefore, it has to be summed with u_{1}
+            a_filter = a_filter + (self.ldm.D @ u.unsqueeze(dim=-1)).squeeze(dim=-1)
+            a_smooth = a_smooth + (self.ldm.D @ u.unsqueeze(dim=-1)).squeeze(dim=-1)
 
         # Supervise a_seq or a_smooth to behavior if requested -> behv_hat shape: (num_seq, num_steps, dim_behv)
         if self.config.model.supervise_behv:
             if self.config.model.behv_from_smooth:
-                behv_hat = self.mapper(a_smooth.view(-1, self.dim_a))
+                behv_hat = self.mapper(a_smooth.reshape(-1, self.dim_a))
             else:
-                behv_hat = self.mapper(a_hat.view(-1, self.dim_a))
-            behv_hat = behv_hat.view(-1, num_steps, self.dim_behv)
+                behv_hat = self.mapper(a_hat.reshape(-1, self.dim_a))
+            behv_hat = behv_hat.reshape(-1, num_steps, self.dim_behv)
         else:
             behv_hat = None
 
         # Get filtered and smoothed estimates of neural observations
-        y_hat = self.decoder(a_hat.view(-1, self.dim_a)).view(num_seq, -1, self.dim_y)
-        y_pred = self.decoder(a_pred.reshape(-1, self.dim_a)).view(num_seq, -1, self.dim_y)
-        y_filter = self.decoder(a_filter.view(-1, self.dim_a)).view(num_seq, -1, self.dim_y)
-        y_smooth = self.decoder(a_smooth.view(-1, self.dim_a)).view(num_seq, -1, self.dim_y)
+        y_hat = self.decoder(a_hat.reshape(-1, self.dim_a)).reshape(num_seq, -1, self.dim_y)
+        y_pred = self.decoder(a_pred.reshape(-1, self.dim_a)).reshape(num_seq, -1, self.dim_y)
+        y_filter = self.decoder(a_filter.reshape(-1, self.dim_a)).reshape(num_seq, -1, self.dim_y)
+        y_smooth = self.decoder(a_smooth.reshape(-1, self.dim_a)).reshape(num_seq, -1, self.dim_y)
 
         # Dump inferrred latents, predictions and reconstructions to a dictionary
         model_vars = dict(a_hat=a_hat, a_pred=a_pred, a_filter=a_filter, a_smooth=a_smooth,
                           x_pred=x_pred, x_filter=x_filter, x_smooth=x_smooth,
                           Lambda_pred=Lambda_pred, Lambda_filter=Lambda_filter, Lambda_smooth=Lambda_smooth,
                           y_hat=y_hat, y_pred=y_pred, y_filter=y_filter, y_smooth=y_smooth,
-                          A=A, B=B, C=C, D=D, behv_hat=behv_hat)
+                          behv_hat=behv_hat)
         return model_vars
 
 
@@ -311,44 +309,58 @@ class DFINE(nn.Module):
         assert k>0 and isinstance(k, int), 'Number of steps ahead prediction value is invalid or of wrong type, k must be a positive integer!'
 
         # Extract the required variables from model_vars dictionary
-        x_filter = model_vars['x_filter']
-        A = model_vars['A'] if 'A' in model_vars else self.ldm.A
-        B = model_vars['B'] if 'B' in model_vars else self.ldm.B
-        C = model_vars['C'] if 'C' in model_vars else self.ldm.C
-        D = model_vars['D'] if 'D' in model_vars else self.ldm.D
+        x_filter = model_vars['x_filter'] #[b,t,x]
 
         # Get the required dimensions
         num_seq, num_steps, _ = x_filter.shape
 
-        # Check if shapes of A, B, and C are 4D where first 2 dimensions are (number of trials/time segments) and (number of steps)
-        if len(A.shape) == 2:
-            A = A.repeat(num_seq, num_steps, 1, 1)
-        if len(B.shape) == 2:
-            B = B.repeat(num_seq, num_steps, 1, 1)
-        if len(C.shape) == 2:
-            C = C.repeat(num_seq, num_steps, 1, 1)
-        if len(D.shape) == 2:
-            D = D.repeat(num_seq, num_steps, 1, 1)
-
         # Here is where k-step ahead prediction is iteratively performed
-        x_pred_k = x_filter[:, :-k, ...] #will contain [x_{k|0}, x_{(k+1)|1}, ..., x_{T|(T-k)}]
+        x_pred_k = x_filter[:, :-k, ...] #[x_{0|0}, x_{1|1}, ..., x_{(T-k)|(T-k)}], will contain [x_{k|0}, x_{(k+1)|1}, ..., x_{T|(T-k)}]
         for i in range(0, k):
-            if i != k:
-                x_pred_k = (A[:, i:-(k-i), ...] @ x_pred_k.unsqueeze(dim=-1) + B[:, i:-(k-i), ...] @ u[:, i:-(k-i), ...].unsqueeze(dim=-1)).squeeze(dim=-1)
-            else:
-                x_pred_k = (A[:, i:,       ...] @ x_pred_k.unsqueeze(dim=-1) + B[:, i:,       ...] @ u[:, i:,       ...].unsqueeze(dim=-1)).squeeze(dim=-1)
+            s = slice(i, num_steps-k+i)
+            x_pred_k = (self.ldm.A @ x_pred_k.unsqueeze(dim=-1) + self.ldm.B @ u[:,s].unsqueeze(dim=-1)).squeeze(dim=-1)
 
-        a_pred_k = (C[:, k:, ...] @ x_pred_k.unsqueeze(dim=-1)).squeeze(dim=-1)
+            # start: [x_{0|0},   x_{1|1},   ..., x_{(T-k)    |(T-k)}]
+
+            # i=0:   [x_{1|0},   x_{2|1},   ..., x_{(T-k+1)  |(T-k)}]
+            #
+            #     = [ x_{1|0} = A x_{0|0} + B u_{0},
+            #         x_{2|1} = A x_{1|1} + B u_{1},
+            #         ...
+            #         x_{T-k+1|T-k} = A x_{T-k|T-k} + B u_{T-k} ]
+
+
+            # i=1:  [x_{2|0},   x_{3|1},   ...,   x_{T-k+2|T-k}]
+            #
+            #     = [ x_{2|0} = A x_{1|0} + B u_{1},
+            #         x_{3|1} = A x_{2|1} + B u_{2},
+            #         ...
+            #         x_{T-k+2|T-k} = A x_{T-k+1|T-k} + B u_{T-k+1} ]
+
+
+            # i:    [x_{i+1|0}, x_{i+2  |1}, ...,   x_{(T-k+i+1)|(T-k)}]
+            #
+            #     = [ x_{i+1|0} = A x_{i|0} + B u_{i},
+            #         x_{i+2|1} = A x_{i+1|1} + B u_{i+1},
+            #         ...
+            #         x_{T-k+i+1|T-k} = A x_{T-k+i|T-k} + B u_{T-k+i} ]
+
+
+            # i=k-1:   [x_{k|0}, x_{(k+1)|1}, ...,   x_{T|(T-k)}]
+            #
+            #     = [ x_{k|0} = A x_{k-1|0} + B u_{k-1},
+            #         x_{k+1|1} = A x_{k|1} + B u_{k},
+            #         ...
+            #         x_{T|T-k} = A x_{T-1|T-k} + B u_{T-1} ]
+
+
+        a_pred_k = (self.ldm.C @ x_pred_k.unsqueeze(dim=-1)).squeeze(dim=-1)
         if self.config.model.fit_D_matrix:
-            a_pred_k += (D[:, k:, ...] @ u[:,k:,...].unsqueeze(dim=-1)).squeeze(dim=-1)
+            a_pred_k = a_pred_k + (self.ldm.D @ u[:,k:,...].unsqueeze(dim=-1)).squeeze(dim=-1)
 
         # After obtaining k-step ahead predicted manifold latent factors, they're decoded to obtain k-step ahead predicted neural observations
         decoder = model_vars['decoder'] if 'decoder' in model_vars else self.decoder
-        y_pred_k = decoder(a_pred_k.view(-1, self.dim_a))
-        # y_pred_k = decoder(a_pred_k.reshape(-1, self.dim_a)).view(num_seq, -1, self.dim_y)
-
-        # Reshape mean and variance back to 3D structure after decoder (num_seq, num_steps, dim_y)
-        y_pred_k = y_pred_k.reshape(num_seq, -1, self.dim_y)
+        y_pred_k = decoder(a_pred_k)
 
         #sanity check
         if k == 1:
@@ -359,7 +371,7 @@ class DFINE(nn.Module):
         return y_pred_k, a_pred_k, x_pred_k
 
 
-    def compute_loss(self, y, u, model_vars, mask=None, behv=None):
+    def compute_loss(self, y, u, model_vars, mask=None, behv=None, y_hat_cl=None, y_target_cl=None):
         '''
         Computes k-step ahead predicted MSE loss, regularization loss and behavior reconstruction loss
         if supervised model is being trained.
@@ -393,48 +405,73 @@ class DFINE(nn.Module):
         loss_dict = dict()
 
         # Iterate over multiple steps ahead
-        k_steps_mse_sum = 0
+        k_steps_mse_sum = torch.tensor(0.)
         y_pred_all = {}
-        for k in self.config.loss.steps_ahead:
-            #TODO this can be made O(k) faster by reusing previous k's computation
-            y_pred_k, _, _ = self.get_k_step_ahead_prediction(model_vars, k=k, u=u)
+        for k, scale_k in zip(self.config.loss.steps_ahead, self.config.loss.scale_steps_ahead):
+            #TODO this can be made k times faster by reusing previous k's computation
+            y_pred_k, _, _ = self.get_k_step_ahead_prediction(model_vars, k=k, u=u.detach())
+            #TODO: if I don't detach u, how will this affect this k-step-ahead computation graph?
+
             y_pred_all[k] = y_pred_k
             mse_pred = compute_mse(y_flat=y[:, k:, :].reshape(-1, self.dim_y),
-                                   y_hat_flat=y_pred_k.reshape(-1, self.dim_y),
-                                   mask_flat=mask[:, k:, :].reshape(-1,))
-            k_steps_mse_sum += mse_pred
+                                    y_hat_flat=y_pred_k.reshape(-1, self.dim_y),
+                                    mask_flat=mask[:, k:, :].reshape(-1,))
+            k_steps_mse_sum += scale_k * mse_pred
             loss_dict[f'steps_{k}_mse'] = mse_pred
 
         model_loss = k_steps_mse_sum
         loss_dict['model_loss'] = model_loss
 
+
         # Get MSE loss for behavior reconstruction, 0 if we dont supervise our model with behavior data
+        behv_mse = torch.tensor(0.)
+        behv_loss = torch.tensor(0.)
         if self.config.model.supervise_behv:
             behv_mse = compute_mse(y_flat=behv[..., self.config.model.which_behv_dims].reshape(-1, self.dim_behv),
                                    y_hat_flat=model_vars['behv_hat'].reshape(-1, self.dim_behv),
                                    mask_flat=mask.reshape(-1,))
             behv_loss = self.scale_behv_recons * behv_mse
-        else:
-            behv_mse = torch.tensor(0, device=model_loss.device)
-            behv_loss = torch.tensor(0, device=model_loss.device)
         loss_dict['behv_mse'] = behv_mse
         loss_dict['behv_loss'] = behv_loss
 
+
         # L2 regularization loss
         reg_loss = torch.tensor(0.)
-        for name, param in self.named_parameters():
-            if 'weight' in name:
-                reg_loss = reg_loss + self.scale_l2 * torch.norm(param)
-        loss_dict['reg_loss'] = reg_loss
+        if self.scale_l2 > 0:
+            for name, param in self.named_parameters():
+                if 'weight' in name:
+                    reg_loss = reg_loss + self.scale_l2 * torch.norm(param)
+            loss_dict['reg_loss'] = reg_loss
+
 
         # B matrix inverse spectral norm regularization loss
-        spectr_reg_B_loss = 0
+        spectr_reg_B_loss = torch.tensor(0.)
         if self.scale_spectr_reg_B > 0:
             # spectr_reg_B_loss = self.scale_spectr_reg_B / torch.linalg.svd(self.ldm.B)[1].min()
             spectr_reg_B_loss = self.scale_spectr_reg_B * (torch.linalg.cond(self.ldm.B) - 1)
             loss_dict['spectr_reg_B_loss'] = spectr_reg_B_loss
 
-        # Final loss is summation of model loss (sum of k-step ahead MSEs), behavior reconstruction loss and L2 regularization loss
-        loss = model_loss + behv_loss + reg_loss + spectr_reg_B_loss
+
+        # Control loss
+        control_loss = torch.tensor(0.)
+        if y_target_cl is not None:
+            #TODO: should I use y_hat from closed-loop, or from open-loop in model_vars?
+            # are they identical? --> no, but torch.allclose==True
+            # are their computation graphs? (assuming I don't detach u before putting into dfine.forward)
+            # if I don't detach, how will this affect the k-step-ahead computation graph?
+
+            # y_hat_T is fn of u_{1:T},
+            # u_t is fn of A,B,C,x_hat_t,
+            # x_hat_t is fn of A,B,C,\theta,x_hat_{t-1},a_hat_t
+            # a_hat_t is fn of y_t
+            y_hat_T = y_hat_cl[:,-1,:] #model_vars['y_filter'][:,-1,:]  #[b,y]
+
+            control_mse = F.mse_loss(y_hat_T, y_target_cl)
+            control_loss = self.scale_control_loss * control_mse
+            loss_dict['control_mse'] = control_mse
+            loss_dict['control_loss'] = control_loss
+
+        # Final loss
+        loss = model_loss + behv_loss + reg_loss + spectr_reg_B_loss + control_loss
         loss_dict['total_loss'] = loss
         return loss, loss_dict, y_pred_all

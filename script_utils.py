@@ -1,9 +1,11 @@
+import os
 import timeit
 
 import torch
 from torch.utils.data import DataLoader
 
-from data.SSM import make_dfine_from_ssm
+import data.RNN as RNN
+import data.SSM as SSM
 from config_dfine import make_config, load_config
 from trainers.TrainerDFINE import TrainerDFINE
 
@@ -41,23 +43,69 @@ def get_model(config=None, train_data=None, load_path=None, ckpt=None, ground_tr
 
     elif ground_truth: #get_model(ground_truth=ssm)
         assert load_path is None and ckpt is None and config is None
-        config = {'model.dim_x': ground_truth.dim_x,
-                  'model.dim_u': ground_truth.dim_u,
-                  'model.dim_a': ground_truth.dim_a,
-                  'model.dim_y': ground_truth.dim_y,
-                  'train.num_epochs': 0}
-        config = make_config(**config)
-        trainer = TrainerDFINE(config)
-        trainer.dfine = make_dfine_from_ssm(ground_truth, trainer.dfine)
+
+        if isinstance(ground_truth, SSM.NonlinearStateSpaceModel):
+            config = {'model.dim_x': ground_truth.dim_x,
+                      'model.dim_u': ground_truth.dim_u,
+                      'model.dim_a': ground_truth.dim_a,
+                      'model.dim_y': ground_truth.dim_y,
+                      'train.num_epochs': 0}
+            config = make_config(**config)
+            trainer = TrainerDFINE(config)
+            trainer.dfine = SSM.make_dfine_from_ssm(ground_truth, trainer.dfine)
+        elif isinstance(ground_truth, RNN.RNN):
+            config = {'model.dim_x': ground_truth.dim_h,
+                      'model.dim_u': ground_truth.dim_u,
+                      'model.dim_a': ground_truth.dim_y,
+                      'model.dim_y': ground_truth.dim_y,
+                      'train.num_epochs': 0}
+            config = make_config(**config)
+            trainer = TrainerDFINE(config)
+            trainer.dfine = RNN.make_dfine_from_rnn(ground_truth, trainer.dfine)
+
 
     else: #get_model(config, train_data)
         assert load_path is None and ckpt is None and ground_truth is None
+
+        #ensure that there is no bottleneck in y->a transformation
+        assert all([nl >= config['model.dim_a'] for nl in config['model.hidden_layer_list']])
+
         config = make_config(**config)
         trainer = TrainerDFINE(config)
-        train_loader = DataLoader(train_data, batch_size=config.train.batch_size)
-        try:
-            trainer.train(train_loader)
-        except KeyboardInterrupt: #return model in its current state if interrupt training
-            return config, trainer
+
+        if train_data is not None:
+            train_loader = DataLoader(train_data, batch_size=config.train.batch_size, shuffle=True)
+            try:
+                trainer.train(train_loader)
+            except KeyboardInterrupt: #return model in its current state if interrupt training
+                return config, trainer
 
     return config, trainer
+
+
+
+def resume_training(trainer, train_data, additional_epochs=1, batch_size=64, override_save_dir=None, override_lr=None):
+    from torch.utils.tensorboard import SummaryWriter
+
+    #fix save dir
+    assert os.path.isdir(trainer.config.model.save_dir)
+    if override_save_dir:
+        trainer.config.model.save_dir = override_save_dir
+        trainer.ckpt_save_dir = os.path.join(trainer.config.model.save_dir, 'ckpts')
+        trainer.plot_save_dir = os.path.join(trainer.config.model.save_dir, 'plots')
+        trainer.writer = SummaryWriter(log_dir=os.path.join(trainer.config.model.save_dir, 'summary'))
+
+    #fix LR
+    if override_lr:
+        trainer.config.lr.init = override_lr
+        trainer.optimizer = trainer._get_optimizer(params=trainer.dfine.parameters())
+        trainer.lr_scheduler = trainer._get_lr_scheduler()
+
+    #extend epochs
+    trainer.start_epoch = trainer.config.train.num_epochs + 1
+    trainer.config.train.num_epochs = trainer.start_epoch + additional_epochs
+
+    #make dataloader
+    trainer.dfine.requires_grad_()
+    train_loader = DataLoader(train_data, batch_size=batch_size)
+    trainer.train(train_loader)

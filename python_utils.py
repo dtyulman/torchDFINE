@@ -1,12 +1,98 @@
-'''
-Copyright (c) 2023 University of Southern California
-See full notice in LICENSE.md
-Hamidreza Abbaspourazad*, Eray Erturk* and Maryam M. Shanechi
-Shanechi Lab, University of Southern California
-'''
-
 import torch
 import numpy as np
+
+
+def identity(x):
+    return x
+
+
+def int_sqrt(n, r=None, c=None):
+    """Returns the two integers r,c such that their product is the closest one greater than n.
+    Either r or c can be specified. Useful for making a r-by-c grid out of n items.
+    """
+    if r is None and c is None:
+        r = int(np.ceil(np.sqrt(n)))
+        c = int(np.round(np.sqrt(n)))
+    elif r is None and c is not None:
+        r = int(np.ceil(n/c))
+    elif r is not None and c is None:
+        c = int(np.ceil(n/r))
+    assert r*c >= n #sanity check
+    return r,c
+
+
+class WrapperModule(torch.nn.Module):
+    """Allows dynamically changing a child module, otherwise get a TypeError
+    e.g. dfine.encoder = lambda x:x results in:
+      `TypeError: cannot assign '__main__.<lambda>' as child module
+      'encoder' (torch.nn.Module or None expected)`, but
+    but dfine.encoder = WrapperModule(lambda x:x) is ok
+    """
+    def __init__(self, f):
+        super().__init__()
+        self.f = f
+
+    def forward(self, *args, **kwargs):
+        return self.f(*args, **kwargs)
+
+    def __repr__(self):
+        return repr(self.f)
+
+
+class TempAttr:
+    """If have object foo with foo.x = 'a', can do:
+    with TempAttr(foo, 'x', 'b'):
+        print(foo.x) #prints 'b'
+    print(foo.x) #prints 'a'
+    """
+    def __init__(self, obj, attr, value):
+        self.obj = obj
+        self.attr = attr
+        self.value = value
+
+    def __enter__(self):
+        self.original_value = getattr(self.obj, self.attr)
+        setattr(self.obj, self.attr, self.value)
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        setattr(self.obj, self.attr, self.original_value)
+
+
+
+def tile_to_shape(tensor, target_shape):
+    """
+    Tile a tensor to match the desired target shape along all dimensions.
+    If the target shape is not an integer multiple of the input shape,
+    the tensor is truncated along each dimension.
+    Pass -1 for a dimension in `target_shape` to leave it unchanged.
+
+    Args:
+        tensor (torch.Tensor): The input tensor to tile.
+        target_shape (tuple): The desired shape of the output tensor, where -1 means "leave unchanged".
+
+    Returns:
+        torch.Tensor: The tiled and truncated tensor.
+    """
+    input_shape = tensor.shape
+    if len(target_shape) != len(input_shape):
+        raise ValueError("Target shape must have the same number of dimensions as the input tensor.")
+
+    # Compute the number of repeats needed for each dimension
+    repeats = [
+        ((target_size + input_size - 1) // input_size if target_size != -1 else 1)
+        for input_size, target_size in zip(input_shape, target_shape)
+    ]
+
+    # Tile the tensor
+    tiled_tensor = tensor.repeat(*repeats)
+
+    # Truncate to the target shape, preserving dimensions with -1
+    slices = [
+        slice(0, target_size if target_size != -1 else input_size)
+        for input_size, target_size in zip(input_shape, target_shape)
+    ]
+    return tiled_tensor[tuple(slices)]
+
 
 
 def linspace(start, end, steps, endpoint=True, **kwargs):
@@ -89,14 +175,22 @@ def carry_to_device(data, device):
         return data
 
 
-def convert_to_tensor(x):
-    if isinstance(x, torch.Tensor):
-        return x
-    elif isinstance(x, np.ndarray):
-        return torch.from_numpy(x) # use np.ndarray as middle step so that function works with tf tensors as well
+def convert_to_tensor(x, convert_dtype='default'):
+    if isinstance(x, np.ndarray):
+        x = torch.from_numpy(x)
     elif isinstance(x, (list, tuple, float, int)):
-        return torch.tensor(x)
-    raise ValueError('Invalid input')
+        x = torch.tensor(x)
+    elif not isinstance(x, torch.Tensor):
+        raise ValueError('Invalid input')
+
+    if not convert_dtype:
+        pass
+    elif convert_dtype == 'default':
+        x = x.to(torch.get_default_dtype())
+    else:
+        x = x.to(convert_dtype)
+
+    return x
 
 
 def convert_to_numpy(x):

@@ -21,6 +21,7 @@ from config_dfine import get_default_config
 from python_utils import carry_to_device
 from time_series_utils import get_nrmse_error
 from metrics import Mean
+import datasets
 
 torch.set_printoptions(precision=3)
 np.set_printoptions(precision=3)
@@ -111,6 +112,8 @@ class TrainerDFINE(BaseTrainer):
             metric_names.append('behv_loss')
         metric_names.append('model_loss')
         metric_names.append('reg_loss')
+        metric_names.append('control_mse')
+        metric_names.append('control_loss')
         metric_names.append('spectr_reg_B_loss')
         metric_names.append('total_loss')
 
@@ -154,6 +157,11 @@ class TrainerDFINE(BaseTrainer):
         if self.dfine.scale_spectr_reg_B > 0:
             log_str += f"spectr_reg_B_loss: {self.metrics[train_valid]['spectr_reg_B_loss'].compute():.5f}, scale_spectr_reg_B: {self.dfine.scale_spectr_reg_B:.5f}\n"
 
+
+        if self.dfine.scale_control_loss > 0:
+            log_str += f"control_mse: {self.metrics[train_valid]['control_mse'].compute():.5f}, scale_control_loss: {self.dfine.scale_control_loss:.5f}\n"
+
+
         # If model is behavior-supervised, log behavior reconstruction loss
         if self.config.model.supervise_behv:
             log_str += f"behv_loss: {self.metrics[train_valid]['behv_loss'].compute():.5f}, scale_behv_recons: {self.dfine.scale_behv_recons:.5f}\n"
@@ -196,7 +204,11 @@ class TrainerDFINE(BaseTrainer):
 
                 # Carry data to device
                 batch = carry_to_device(data=batch, device=self.device)
-                y_batch, u_batch, behv_batch, mask_batch = batch
+                y_batch, u_batch, behv_batch, mask_batch = batch[:4]
+                if isinstance(train_loader.dataset, datasets.ControlledDFINEDataset):
+                    y_target_cl, y_hat_cl = batch[4:6]
+                else:
+                    y_target_cl = y_hat_cl = None
 
                 # Perform forward pass and compute loss
                 model_vars = self.dfine(y=y_batch, u=u_batch, mask=mask_batch)
@@ -204,7 +216,9 @@ class TrainerDFINE(BaseTrainer):
                                                                         u=u_batch,
                                                                         model_vars=model_vars,
                                                                         mask=mask_batch,
-                                                                        behv=behv_batch)
+                                                                        behv=behv_batch,
+                                                                        y_hat_cl=y_hat_cl,
+                                                                        y_target_cl=y_target_cl)
 
                 # Compute model gradients
                 self.optimizer.zero_grad()
@@ -503,7 +517,7 @@ class TrainerDFINE(BaseTrainer):
         plt.close('all')
 
 
-    def create_k_step_ahead_plot(self, y_batch, y_pred_batch, mask_batch=None, epoch=1, trial_num=0, prefix='train'):
+    def create_k_step_ahead_plot(self, y_batch, y_pred_batch, mask_batch=None, epoch=1, trial_num=0, prefix='train', plot_n_dims=4):
         '''
         Creates true and k-step ahead predicted neural observation plots during training and validation
 
@@ -517,27 +531,25 @@ class TrainerDFINE(BaseTrainer):
         - trial_num:, int, Trial number in the batch to plot
         - prefix: str, Plotname prefix to save the plot
         '''
+        if len(self.config.loss.steps_ahead) == 0:
+            return
 
         num_total_steps = y_batch.shape[1]
+        plot_n_dims = min(plot_n_dims, y_batch.shape[-1])
 
         # Create the mask if it's None
         if mask_batch is None:
             mask_batch = torch.ones(y_batch.shape[:-1]).unsqueeze(dim=-1)
 
         # Get the number of steps ahead for which DFINE is optimized and create the figure
-        num_k = len(self.config.loss.steps_ahead)
-        fig = plt.figure(figsize=(20, 20))
-        fig_num = 1
+        fig, ax = plt.subplots(len(self.config.loss.steps_ahead), plot_n_dims, figsize=(20,20))
 
         # Start iterating over steps ahead for plotting
-        for k in self.config.loss.steps_ahead:
-            # Get the k-step ahead prediction
-            y_pred_k_batch = y_pred_batch[k]
-
+        for ik, k in enumerate(self.config.loss.steps_ahead):
             # Detach tensors for plotting and take timesteps from k to T (since we're plotting k-step ahead predictions)
             y_batch_k = y_batch[:, k:, ...].detach().cpu()
             mask_batch_k = mask_batch[:, k:, :].detach().cpu()
-            y_pred_k_batch = y_pred_k_batch.detach().cpu()
+            y_pred_k_batch =  y_pred_batch[k].detach().cpu() # k-step ahead prediction
 
             # Mask y and y_hat
             num_seq = y_batch.shape[0]
@@ -545,36 +557,17 @@ class TrainerDFINE(BaseTrainer):
             y_batch_k = y_batch_k[mask_bool].reshape(num_seq, -1, self.dfine.dim_y)
             y_pred_k_batch = y_pred_k_batch[mask_bool].reshape(num_seq, -1, self.dfine.dim_y)
 
-            # Plot dimension 0
-            ax = fig.add_subplot(num_k, 2, fig_num)
-            ax.plot(range(k, num_total_steps), y_batch_k[trial_num, :, 0], 'g', label=f'{k}-step y_true')
-            ax.plot(range(k, num_total_steps), y_pred_k_batch[trial_num, :, 0], 'b', label=f'{k}-step predicted y')
-            ax.set_title(f'k={k} step ahead')
-            ax.set_xlabel('Time')
-            ax.set_ylabel('Dim 0')
-            ax.legend()
-            fig_num += 1
+            for dim in range(plot_n_dims):
+                ax[ik,dim].plot(range(k, num_total_steps), y_batch_k[trial_num, :, dim], 'g', label='$y_t$')
+                ax[ik,dim].plot(range(k, num_total_steps), y_pred_k_batch[trial_num, :, dim], 'b', label='$\\widehat{y}_{t|t-'f'{k}''}$')
 
-            # Plot first 3 dimensions of k-step prediction as 3D scatter plot (mostly not useful visualization unless the manifold is obvious in first 3 dimensions)
-            color_index = range(y_batch_k.shape[1])
-            color_map = plt.cm.get_cmap('viridis')
-            if y_batch.shape[-1] >= 3:
-                ax = fig.add_subplot(num_k, 2, fig_num, projection='3d')
-                ax_m = ax.scatter(y_pred_k_batch[trial_num, :, 0], y_pred_k_batch[trial_num, :, 1], y_pred_k_batch[trial_num, :, 2], c=color_index, vmin=0, vmax=y_batch.shape[1], s=35, cmap=color_map, label=f'{k}-step predicted y')
-                ax.set_zlabel('Dim 2')
-            elif y_batch.shape[-1] == 2:
-                ax = fig.add_subplot(num_k, 2, fig_num)
-                ax_m = ax.scatter(y_pred_k_batch[trial_num, :, 0], y_pred_k_batch[trial_num, :, 1], c=color_index, vmin=0, vmax=y_batch.shape[1], s=35, cmap=color_map, label=f'{k}-step predicted y')
-            else:
-                raise NotImplementedError()
-            ax.set_title(f'k={k} step ahead')
-            ax.set_xlabel('Dim 0')
-            ax.set_ylabel('Dim 1')
-            ax.legend()
-            fig.colorbar(ax_m)
-            fig_num += 1
+                ax[0,dim].set_title(f'Dim {dim}')
+                ax[-1,dim].set_xlabel('Time')
+            ax[ik,0].set_ylabel(f'k={k} step ahead y')
+            ax[ik,0].legend()
 
         # Save the plot under plot_save_dir
+        fig.tight_layout()
         plot_name = f'{prefix}_k_step_obs_{epoch}.png'
         plt.savefig(os.path.join(self.plot_save_dir, plot_name))
         plt.close('all')
@@ -904,8 +897,9 @@ class TrainerDFINE(BaseTrainer):
 
         # Rest below is for logging scale values in the loss, will be same for all prefices, so log them only for 'train'
         if prefix != 'valid':
-            self.writer.add_scalar('scale_l2', self.dfine.scale_l2, epoch)
-            self.writer.add_scalar('scale_spectr_reg_B', self.dfine.scale_spectr_reg_B, epoch)
+            self.writer.add_scalar('scale/L2', self.dfine.scale_l2, epoch)
+            self.writer.add_scalar('scale/spectr_reg_B', self.dfine.scale_spectr_reg_B, epoch)
+            self.writer.add_scalar('scale/control_loss', self.dfine.scale_control_loss, epoch)
             self.writer.add_scalar('learning_rate', self.lr_scheduler.get_last_lr()[0], epoch)
             if self.config.model.supervise_behv:
                 self.writer.add_scalar('scale_behv_recons', self.dfine.scale_behv_recons, epoch)

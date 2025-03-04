@@ -52,9 +52,9 @@ class LDM(nn.Module):
         self.fit_D_matrix = kwargs.pop('fit_D_matrix', False)
 
         # Get initial values for LDM parameters
-        self.A = kwargs.pop('A', torch.eye(self.dim_x, self.dim_x).unsqueeze(dim=0))
-        self.B = kwargs.pop('B', torch.eye(self.dim_x, self.dim_u).unsqueeze(dim=0))
-        self.C = kwargs.pop('C', torch.eye(self.dim_a, self.dim_x).unsqueeze(dim=0))
+        self.A = kwargs.pop('A', torch.eye(self.dim_x, self.dim_x))
+        self.B = kwargs.pop('B', torch.eye(self.dim_x, self.dim_u))
+        self.C = kwargs.pop('C', torch.eye(self.dim_a, self.dim_x))
         self.D = kwargs.pop('D', torch.eye(self.dim_a, self.dim_u)) if self.fit_D_matrix else torch.zeros(self.dim_a, self.dim_u)
 
         # Get KF initial conditions
@@ -184,7 +184,8 @@ class LDM(nn.Module):
         - Lambda_t_all: torch.Tensor, shape: (num_steps, num_seq, dim_x, dim_x),
             Dynamic latent factor estimation error covariance filtered estimates (t|t) where first index of the second dimension has P_{0|0}
         '''
-        num_seq, num_steps, _ = a.shape
+
+        num_seq, num_steps, _ = a.shape #[b,t,a]
 
         if mask is None:
             mask = torch.ones(num_seq, num_steps)
@@ -202,51 +203,53 @@ class LDM(nn.Module):
         mu_pred = self.mu_0.unsqueeze(dim=0).repeat(num_seq, 1) # (num_seq, dim_x)
         Lambda_pred = self.Lambda_0.unsqueeze(dim=0).repeat(num_seq, 1, 1) # (num_seq, dim_x, dim_x)
 
-        # Create empty arrays for filtered and predicted estimates, NOTE: The last time-step of the prediction has T+1|T, which may not be of interest
-        mu_pred_all = torch.zeros((num_steps, num_seq, self.dim_x), device=mu_pred.device) #mu_pred_all[t,i,:] = mu_{t+1|t} for t=0..T-1
-        mu_t_all = torch.zeros((num_steps, num_seq, self.dim_x), device=mu_pred.device) #mu_t_all[t,i,:] = mu_{t|t} for t=0..T-1
-
-        # Create empty arrays for filtered and predicted error covariance, NOTE: The last time-step of the prediction has T+1|T, which may not be of interest
-        Lambda_pred_all = torch.zeros((num_steps, num_seq, self.dim_x, self.dim_x), device=mu_pred.device)
-        Lambda_t_all = torch.zeros((num_steps, num_seq, self.dim_x, self.dim_x), device=mu_pred.device)
+        # Filtered and predicted estimates/error covariance. NOTE: The last time-step of the prediction has T+1|T, which may not be of interest
+        mu_t_all = [] #mu_t_all[t,i,:] = mu_{t|t} for t=0..T-1
+        Lambda_t_all = []
+        mu_pred_all = [] #mu_pred_all[t,i,:] = mu_{t+1|t} for t=0..T-1
+        Lambda_pred_all = []
 
         # Get covariance matrices
         W, R = self._get_covariance_matrices()
 
         for t in range(num_steps):
-            # Tile LDM matrices for each trial
-            A_t = self.A.repeat(num_seq, 1, 1) # (num_seq, dim_x, dim_x)
-            B_t = self.B.repeat(num_seq, 1, 1) # (num_seq, dim_x, dim_u)
-            C_t = self.C.repeat(num_seq, 1, 1) # (num_seq, dim_a, dim_x)
-            D_t = self.D.repeat(num_seq, 1, 1) # (num_seq, dim_a, dim_u)
-
             # Obtain residual
-            a_pred = (C_t @ mu_pred.unsqueeze(dim=-1)).squeeze(dim=-1) # (num_seq, dim_a)
+            a_pred = (self.C @ mu_pred.unsqueeze(dim=-1)).squeeze(dim=-1) # (num_seq, dim_a)
             r = a_masked[:, t, ...] - a_pred # (num_seq, dim_a)
             if self.fit_D_matrix:
-                r -= (D_t @ u[:,t,...].unsqueeze(dim=-1)).squeeze(dim=-1) # (num_seq, dim_a)
+                r = r - (self.D @ u[:,t,...].unsqueeze(dim=-1)).squeeze(dim=-1) # (num_seq, dim_a)
 
             # Project system uncertainty into measurement space, get Kalman Gain
-            S = C_t @ Lambda_pred @ torch.permute(C_t, (0, 2, 1)) + R # (num_seq, dim_a, dim_a)
+            S = self.C @ Lambda_pred @ self.C.T + R # (num_seq, dim_a, dim_a)
             S_inv = torch.inverse(S) # (num_seq, dim_a, dim_a)
-            K = Lambda_pred @ torch.permute(C_t, (0, 2, 1)) @ S_inv # (num_seq, dim_x, dim_a)
+            K = Lambda_pred @ self.C.T @ S_inv # (num_seq, dim_x, dim_a)
             K = torch.mul(K, mask[:, t, ...].unsqueeze(dim=1))  # (num_seq, dim_x, dim_a) x (num_seq, 1,  1)
 
             # Get current mu and Lambda
             mu_t = mu_pred + (K @ r.unsqueeze(dim=-1)).squeeze(dim=-1) # (num_seq, dim_x)
-            I_KC = torch.eye(self.dim_x, device=mu_pred.device) - K @ C_t # (num_seq, dim_x, dim_x)
+            I_KC = torch.eye(self.dim_x) - K @ self.C # (num_seq, dim_x, dim_x)
             Lambda_t = I_KC @ Lambda_pred # (num_seq, dim_x, dim_x)
 
             # Prediction
-            u_t = u[:, t, ...]
-            mu_pred = (A_t @ mu_t.unsqueeze(dim=-1) + B_t @ u_t.unsqueeze(dim=-1)).squeeze(dim=-1) #(num_seq, dim_x, dim_x) x (num_seq, dim_x, 1) + (num_seq, dim_x, dim_u) x (num_seq, dim_u, 1) --> (num_seq, dim_x, 1) --> (num_seq, dim_x)
-            Lambda_pred = A_t @ Lambda_t @ torch.permute(A_t, (0, 2, 1)) + W #(num_seq, dim_x, dim_x) x (num_seq, dim_x, dim_x) x (num_seq, dim_x, dim_x) --> (num_seq, dim_x, dim_x)
+            if t < num_steps-1:
+                u_t = u[:, t, ...]
+            else:
+                #last timestep of predictions will be dropped since it's T+1|T so give it dummy input
+                u_t = torch.full((num_seq, self.dim_u), torch.nan)
+
+            mu_pred = (self.A @ mu_t.unsqueeze(dim=-1) + self.B @ u_t.clone().unsqueeze(dim=-1)).squeeze(dim=-1) #(num_seq, dim_x, dim_x) x (num_seq, dim_x, 1) + (num_seq, dim_x, dim_u) x (num_seq, dim_u, 1) --> (num_seq, dim_x, 1) --> (num_seq, dim_x)
+            Lambda_pred = self.A @ Lambda_t @ self.A.T + W #(num_seq, dim_x, dim_x) x (num_seq, dim_x, dim_x) x (num_seq, dim_x, dim_x) --> (num_seq, dim_x, dim_x)
 
             # Store predictions and updates
-            mu_pred_all[t, ...] = mu_pred
-            mu_t_all[t, ...] = mu_t
-            Lambda_pred_all[t, ...] = Lambda_pred
-            Lambda_t_all[t, ...] = Lambda_t
+            mu_pred_all.append(mu_pred)
+            mu_t_all.append(mu_t)
+            Lambda_pred_all.append(Lambda_pred)
+            Lambda_t_all.append(Lambda_t)
+
+        mu_pred_all = torch.stack(mu_pred_all, dim=0) #[t,b,x]
+        mu_t_all = torch.stack(mu_t_all, dim=0) #[t,b,x]
+        Lambda_pred_all = torch.stack(Lambda_pred_all, dim=0) #[t,b,x,x]
+        Lambda_t_all = torch.stack(Lambda_t_all, dim=0) #[t,b,x,x]
 
         return mu_pred_all, mu_t_all, Lambda_pred_all, Lambda_t_all
 
@@ -327,8 +330,7 @@ class LDM(nn.Module):
         Lambda_back = Lambda_back_all[-1, ...]
 
         for t in range(num_steps-2, -1, -1): # iterate loop over reverse time: T-2, T-3, ..., 0, where the last time-step is T-1
-            A_t = self.A.repeat(num_seq, 1, 1)
-            J_t = Lambda_t_all[t, ...] @ torch.permute(A_t, (0, 2, 1)) @ torch.inverse(Lambda_pred_all[t, ...]) # (num_seq, dim_x, dim_x) x (num_seq, dim_x, dim_x) x (num_seq, dim_x, dim_x)
+            J_t = Lambda_t_all[t, ...] @ self.A.T @ torch.inverse(Lambda_pred_all[t, ...]) # (num_seq, dim_x, dim_x) x (num_seq, dim_x, dim_x) x (num_seq, dim_x, dim_x)
             mu_back = mu_t_all[t, ...] + (J_t @ (mu_back - mu_pred_all[t, ...]).unsqueeze(dim=-1)).squeeze(dim=-1) # (num_seq, dim_x) + (num_seq, dim_x, dim_x) x (num_seq, dim_x)
 
             Lambda_back = Lambda_t_all[t, ...] + J_t @ (Lambda_back - Lambda_pred_all[t, ...]) @ torch.permute(J_t, (0, 2, 1)) # (num_seq, dim_x, dim_x)

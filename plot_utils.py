@@ -1,10 +1,13 @@
 import torch
 import numpy as np
 import matplotlib as mpl
+import mpl_toolkits
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 
+from python_utils import int_sqrt
 
+@torch.no_grad()
 def plot_vs_time(seq, target=None, t_on=None, t_off=None, mode='tiled', max_N=10, max_B=10, ax=None, varname='dim', legend=True, color=None, label=None):
     """
     seq: [b,t,n]
@@ -34,6 +37,7 @@ def plot_vs_time(seq, target=None, t_on=None, t_off=None, mode='tiled', max_N=10
             ax.axvline(t_off, color='k', ls='--')
 
     for ax in np.atleast_2d(axs)[-1,:]:
+        ax.xaxis.set_tick_params(which="both", labelbottom=True)
         ax.set_xlabel('Time')
 
     for r,ax in enumerate(np.atleast_2d(axs)[:,0]):
@@ -41,10 +45,11 @@ def plot_vs_time(seq, target=None, t_on=None, t_off=None, mode='tiled', max_N=10
         ax.set_ylabel(f'${varname}{dimnum}(t)$')
 
     fig.tight_layout()
+    fig.subplots_adjust(hspace=0.01)
     return fig, axs
 
 
-
+@torch.no_grad()
 def _plot_tiled(seq, target=None, ax=None, legend=True, color=None, label=None):
     """Helper for plot_vs_time"""
     B,T,N = seq.shape
@@ -64,7 +69,7 @@ def _plot_tiled(seq, target=None, ax=None, legend=True, color=None, label=None):
     return fig, ax
 
 
-
+@torch.no_grad()
 def _plot_overlaid(seq, target=None, ax=None, legend=True):
     """Helper for plot_vs_time"""
     B,T,N = seq.shape
@@ -85,7 +90,7 @@ def _plot_overlaid(seq, target=None, ax=None, legend=True):
     return fig, ax
 
 
-
+@torch.no_grad()
 def plot_parametric(seq, t_on=None, t_off=None, mode='line', size=None, cbar=True, ax=None, varname='dim', title=None, cmap='turbo'):
     """
     seq is [T,N] or [B,T,N], where N>=2. Plots only first 3 dimensions if N>3
@@ -116,10 +121,13 @@ def plot_parametric(seq, t_on=None, t_off=None, mode='line', size=None, cbar=Tru
                        np.tile(default, (T-1-t_off, 1))]) #[t_off+1 ... seq_len-1]
 
     #plot
+    line_spec = mode.split('_')
+    mode = line_spec[0]
+    linestyle = line_spec[1] if len(line_spec) == 2 else 'solid'
     for s in seq:
         if mode == 'line':
             for i in range(T-1):
-                ax.plot(*s[i:i+2].T, color=color[i], lw=size)
+                ax.plot(*s[i:i+2].T, color=color[i], lw=size, linestyle=linestyle)
         elif mode == 'scatter':
             ax.scatter(*s.T, c=color, s=size)
 
@@ -141,7 +149,7 @@ def plot_parametric(seq, t_on=None, t_off=None, mode='line', size=None, cbar=Tru
     return fig, ax
 
 
-
+@torch.no_grad()
 def plot_heatmap(M, h_axis, v_axis, vmin=0, vmax=1, cmap='Reds'):
     #fix cmap
     cmap = mpl.colormaps[cmap]
@@ -156,8 +164,8 @@ def plot_heatmap(M, h_axis, v_axis, vmin=0, vmax=1, cmap='Reds'):
     return fig, ax
 
 
-
-def plot_eigvals(mat, ax=None, title=''):
+@torch.no_grad()
+def plot_eigvals(mat, ax=None, title='', verbose=False, return_eigvals=False):
     fig, ax = _prep_axes(ax)
     mat = _prep_mat(mat)
     eigvals = torch.linalg.eigvals(mat)
@@ -172,8 +180,49 @@ def plot_eigvals(mat, ax=None, title=''):
     ax.set_xlabel('$Re(\\lambda)$')
     ax.set_ylabel('$Im(\\lambda)$')
     ax.set_title(title)
+
+    if verbose:
+        print(f'eig = {eigvals[eigvals.abs()>1e-14].numpy()}')
+
+    if return_eigvals:
+        return fig, ax, eigvals
     return fig, ax
 
+
+@torch.no_grad()
+def plot_high_dim(x, d=2, axs=None, label=None, varname='dim', same_color=False, **kwargs):
+    """
+        x: [b,nx], nx>3
+        d: 2 or 3, dimension of each slice through high-dim x
+    """
+    B,N = x.shape
+
+    if axs is None:
+        fig = plt.figure(figsize=(15,8))
+        assert d==2 or d==3
+    else:
+        fig = axs[0].get_figure()
+        d = 3 if isinstance(axs[0], mpl_toolkits.mplot3d.axes3d.Axes3D) else 2
+
+    num_subplots = int(np.ceil(N/d))
+    rows, cols = int_sqrt(num_subplots)
+    for i in range(num_subplots):
+        ax = fig.add_subplot(rows,cols,i+1, projection='3d' if d==3 else None) if axs is None else axs[i]
+        dims = slice(d*i, min(d*i+d, N))
+
+        color = ax.collections[-1].get_facecolor() if same_color else kwargs.pop('color', None)
+        ax.scatter(*x[:,dims].T, label=label, color=color, **kwargs)
+
+        ax.set_xlabel(f'${varname}_{{' f'{d*i}' '}$')
+        ax.set_ylabel(f'${varname}_{{' f'{d*i+1}' '}$')
+        if d==3:
+            ax.set_zlabel(f'${varname}_{{' f'{d*i+2}' '}$')
+
+        if i == 0:
+            ax.legend()
+
+    fig.tight_layout()
+    return fig, fig.get_axes()
 
 
 ###########
@@ -212,3 +261,14 @@ def _prep_mat(mat, num_dims=3, append_dim=0):
         else:
             raise NotImplementedError()
     return mat
+
+
+def subplots_square(num_subplots, rows=None, cols=None, force=False, **kwargs):
+    """Generates an approximately-square grid of n subplots
+    """
+    if num_subplots > 400 and force==False:
+        raise RuntimeWarning("Too many plots ({num_subplots}). To override, pass 'force=True' as second argument.")
+
+    rows, cols = int_sqrt(num_subplots)
+    fig, ax = plt.subplots(rows,cols, **kwargs)
+    return fig, ax
