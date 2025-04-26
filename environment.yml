@@ -1,0 +1,20 @@
+name: pyenv
+channels:
+  - conda-forge
+dependencies:
+  - numpy
+  - scipy
+  - pandas
+  - scikit-learn
+  - seaborn
+  - joblib
+  - pytorch::pytorch
+  - torchvision
+  - lightning
+  - tensorboard
+  - yacs
+  - pykalman
+  - dill
+  - matplotlib
+  - control
+  - cvxopt
