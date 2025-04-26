@@ -222,3 +222,66 @@ def generate_input_noise(dim_u, num_seqs, num_steps, lo=-1, hi=1, levels=2):
     else:
         u = (hi-lo)/(levels-1) * torch.randint(levels, (num_seqs, num_steps, dim_u)) + lo
     return u #[b,t,u]
+
+
+
+def generate_interpolated_inputs(dataset, num_seqs, num_steps, samples_per_seq, mode='linear'):
+    """
+    Generates a batch of interpolated sequences.
+
+    Args:
+        dataset (torch.Tensor): Tensor of shape (N, D), where N is the number of samples, D is the dimension.
+        num_seqs (int): Number of sequences to generate.
+        samples_per_seq (int or list of int): Number of random vectors per sequence (can be different per sequence).
+        num_steps (int): Number of time steps per sequence (same for all sequences).
+        mode (str): 'linear' for linear interpolation, 'hold' for zero-order hold.
+
+    Returns:
+        torch.Tensor: Tensor of shape (num_seqs, num_steps, D) containing the batch of sequences.
+    """
+    num_samples, dim_u = dataset.size()
+
+    if isinstance(samples_per_seq, int):
+        samples_per_seq = [samples_per_seq] * num_seqs
+    else:
+        if len(samples_per_seq) != num_seqs:
+            raise ValueError("Length of samples_per_seq list must match num_seqs.")
+
+    assert all(s >= 2 for s in samples_per_seq), "Each samples_per_seq must be at least 2."
+    assert all(num_steps >= s for s in samples_per_seq), "num_steps must be greater than or equal to each samples_per_seq."
+    assert num_samples >= max(samples_per_seq), "Dataset must contain at least max(samples_per_seq) vectors."
+    assert mode in ('linear', 'hold'), "mode must be either 'linear' or 'hold'."
+
+    batch_sequences = []
+
+    for seq_idx in range(num_seqs):
+        s = samples_per_seq[seq_idx]
+
+        indices = torch.randperm(num_samples)[:s]
+        points = dataset[indices]
+
+        transitions = s - 1
+        base_steps = num_steps // transitions
+        extra_steps = num_steps % transitions
+        steps_per_transition = [base_steps + (1 if i < extra_steps else 0) for i in range(transitions)]
+
+        sequence = []
+        for i in range(transitions):
+            start = points[i]
+            end = points[i + 1]
+            n_steps = steps_per_transition[i]
+
+            if mode == 'linear':
+                t = torch.linspace(0, 1, steps=n_steps, device=dataset.device).unsqueeze(1)
+                segment = (1 - t) * start + t * end
+            elif mode == 'hold':
+                segment = start.unsqueeze(0).expand(n_steps, -1)
+
+            sequence.append(segment)
+
+        sequence = torch.cat(sequence, dim=0)
+        if sequence.size(0) != num_steps:
+            raise RuntimeError(f"Generated sequence has incorrect length: {sequence.size(0)} != {num_steps}")
+        batch_sequences.append(sequence)
+
+    return torch.stack(batch_sequences, dim=0)

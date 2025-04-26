@@ -3,7 +3,9 @@ import math
 from copy import deepcopy
 
 import torch
+import torchvision
 from torch import nn
+import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
 import matplotlib.pyplot as plt
@@ -56,10 +58,10 @@ class RNN(nn.Module):
 
         if control_task_input:
             #control input effectively goes through the task input channel
-            #actual implementation just sets the control input matrix equal to the task input matrix
+            assert dim_u is None or dim_u == self.dim_s, 'Must have dim_u == dim_s or None if control_task_input=True'
             self.dim_u = self.dim_s
-            self.Bu = nn.Parameter(torch.empty(self.dim_h, self.dim_u), requires_grad=False)
-            self.Bu.data = self.Bs.data
+            self.Bu = nn.Parameter(torch.empty(self.dim_h, self.dim_u), requires_grad=False) #control input matrix B is fixed
+            self.Bu.data = self.Bs.data #actual implementation just sets the control input matrix equal to the task input matrix
         else:
             self.dim_u = dim_u or dim_h
             self.Bu = nn.Parameter(torch.empty(self.dim_h, self.dim_u), requires_grad=False) #control input matrix B is fixed
@@ -74,8 +76,15 @@ class RNN(nn.Module):
 
         if not isinstance(obs_fn, dict):
             obs_fn = {'obs': obs_fn}
-        self.obs_fn = ObservationFunction(self, **obs_fn)
-        self.dim_y = self.obs_fn.dim_y
+        dim_h = obs_fn.setdefault('dim_h', self.dim_h)
+        dim_z = obs_fn.setdefault('dim_z', self.dim_z)
+        assert dim_h == self.dim_h and dim_z == self.dim_z
+        self.obs_fn = ObservationFunction(**obs_fn)
+
+
+    @property
+    def dim_y(self):
+        return self.obs_fn.dim_y
 
 
     def compute_next_neurons(self, h, s=None, u=None):
@@ -242,26 +251,26 @@ class VelocityRNN(RNN):
 # Helpers #
 ###########
 class ObservationFunction(nn.Module):
-    def __init__(self, rnn, obs='h', dim_y=None):
+    def __init__(self, obs='h', dim_y=None, dim_h=None, dim_z=None, Wr=None):
         super().__init__()
-
-        self.Wr = 0
         self.obs = obs
-
         if self.obs == 'h': #neurons
-            if dim_y is None or dim_y == rnn.dim_h:
-                self.Wr = torch.eye(rnn.dim_h)
-                self.dim_y = rnn.dim_h
+            if dim_y is None or dim_y == dim_h:
+                self.Wr = torch.eye(dim_h)
+                self.dim_y = dim_h
             else:
-                assert dim_y < rnn.dim_h
-                assert rnn.dim_h % dim_y == 0, f'dim_h={rnn.dim_h} must be a multiple of dim_y={dim_y}' #TODO: generalize this
-                self.dim_y = dim_y
-                self.Wr = torch.repeat_interleave(torch.eye(self.dim_y), rnn.dim_h//self.dim_y, dim=1)
-                self.Wr *= self.dim_y/rnn.dim_h
+                if Wr == 'sparse':
+                    self.Wr = torch.eye(dim_y, dim_h)[:, torch.randperm(dim_h)]
+                else:
+                    assert dim_y < dim_h
+                    assert dim_h % dim_y == 0, f'dim_h={dim_h} must be a multiple of dim_y={dim_y}' #TODO: generalize this
+                    self.dim_y = dim_y
+                    self.Wr = torch.repeat_interleave(torch.eye(self.dim_y), dim_h//self.dim_y, dim=1)
+                    self.Wr *= self.dim_y/dim_h
 
         elif self.obs == 'z': #output
-            self.Wr = torch.eye(rnn.dim_z)
-            self.dim_y = rnn.dim_z
+            self.Wr = torch.eye(dim_z)
+            self.dim_y = dim_z
 
         else:
              raise ValueError(f'Invalid input: obs={obs}')
@@ -335,6 +344,16 @@ def make_dfine_from_rnn(rnn, dfine, s=None, skip_lin_check=False):
 ################
 # RNN training #
 ################
+class TimeAvgCrossEntropyLoss(nn.CrossEntropyLoss):
+    def forward(self, input, target):
+        '''
+        input [b,t,z], one-hot logits
+        target [b,t,1], index of class (not one-hot!)
+        '''
+        input = input.permute(0, 2, 1)  #[b,t,z]->[b,z,t]
+        return super().forward(input, target)
+
+
 class MSELossVelocityPenalty(nn.MSELoss):
     def __init__(self, velocity_weight=1.0, mask=None):
         super().__init__()
@@ -400,7 +419,8 @@ def make_rnn(rnn_kwargs, dataset_kwargs, train_kwargs, seed=None, load=False, sa
         for i, dim in enumerate(['dim_s', 'dim_z']):
             if dim not in rnn_kwargs or rnn_kwargs[dim] is None:
                 rnn_kwargs[dim] = dataset[0][i].shape[-1]
-            assert rnn_kwargs[dim] == dataset[0][i].shape[-1]
+            if dataset_kwargs['name'].lower() != 'mnist' and dim != dim_z:
+                assert rnn_kwargs[dim] == dataset[0][i].shape[-1]
 
         rnn = RNN(**rnn_kwargs)
         rnn = train_rnn(rnn, dataset, **train_kwargs)
@@ -453,12 +473,43 @@ def make_rnn_from_dfine(dfine):
 #########################
 # RNN training datasets #
 #########################
-
 def get_rnn_dataset(name, **kwargs):
+    name = name.lower()
     if name == 'reach':
         return ReachDataset(**kwargs)
+    elif name == 'mnist':
+        return MnistDataset(**kwargs)
     else:
         raise ValueError(f'Invalid dataset name: {name}')
+
+
+class MnistDataset(Dataset):
+    def __init__(self, num_steps=50, train_or_test='train'):
+        self.num_steps = num_steps
+
+        mnist = torchvision.datasets.MNIST(root='./data/', download=True, train=(train_or_test=='train'))
+        self.data = mnist.data #shape=[D,28,28], pixels in range [0-255]
+        self.labels = mnist.targets #shape=[D], entries in [0-9]
+
+        self.data = self.data.reshape(self.data.shape[0], -1) #flatten to [D,784]
+        self.data = (self.data-self.data.min())/(self.data.max()-self.data.min()) #to range [0,1]
+
+
+    def __getitem__(self, idx):
+        inp, tgt = self.data[idx], self.labels[idx]
+
+        if inp.ndim == 1:
+            inp_seq = inp.unsqueeze(0).expand(self.num_steps, -1) #[z]->[1,z]->[t,z]
+            tgt_seq = tgt.expand(self.num_steps) #[1]->[t]
+        else:
+            inp_seq = inp.unsqueeze(1).expand(-1, self.num_steps, -1) #[b,z]->[b,1,z]->[b,t,z]
+            tgt_seq = tgt.unsqueeze(-1).expand(-1, self.num_steps) #[b]->[b,t]
+
+        return inp_seq, tgt_seq
+
+
+    def __len__(self):
+        return len(self.data)
 
 
 
@@ -474,64 +525,18 @@ class ReachDataset(Dataset):
 
 
     def __getitem__(self, idx):
-        try:
-            input_seq = self.targets[idx].unsqueeze(0).expand(self.num_steps,-1) #[z]->[1,z]->[t,z]
-        except:
-            input_seq = self.targets[idx].unsqueeze(1).expand(-1,self.num_steps,-1) #[b,z]->[b,1,z]->[b,t,z]
+        inp = self.targets[idx]
+        if inp.ndim == 1:
+            input_seq = inp.unsqueeze(0).expand(self.num_steps, -1) #[z]->[1,z]->[t,z]
+        else:
+            input_seq = inp.unsqueeze(1).expand(-1, self.num_steps, -1) #[b,z]->[b,1,z]->[b,t,z]
+
         target_seq = input_seq.clone()
         return input_seq, target_seq
 
 
     def __len__(self):
         return len(self.targets)
-
-
-    def plot_rnn_output(self, rnn, plot='z', h_dims=(0,3), n_targets=None):
-        if hasattr(rnn, 'original'):
-            if plot == 'z':
-                fig, ax = plt.subplots(1,2, sharex='row', sharey='row', figsize=(10, 4))
-                self._plot_rnn_output(rnn.original, ax=ax[0], n_targets=n_targets, legend=False)
-                h0 = rnn.original.h_seq[:,0,:]
-                self._plot_rnn_output(rnn, h0=h0, ax=ax[1], n_targets=n_targets, title='Perturbed', cbar=True)
-                fig.set_size_inches(8.22, 4)
-            elif plot == 'h':
-                fig = plt.figure(figsize=(9, 4.5))
-                ax = np.array([fig.add_subplot(121, projection='3d'), fig.add_subplot(122, projection='3d')])
-                self._plot_rnn_output(rnn.original, plot='h', h_dims=h_dims, ax=ax[0], n_targets=n_targets, legend=False)
-
-                h0 = rnn.original.h_seq[:,0,:]
-                self._plot_rnn_output(rnn, h0=h0, plot='h', h_dims=h_dims, ax=ax[1], n_targets=n_targets, title='Perturbed')
-                fig.tight_layout()
-        else:
-            if plot == 'z':
-                fig, ax = self._plot_rnn_output(rnn, n_targets=n_targets)
-            elif plot == 'h':
-                fig, ax = self._plot_rnn_output(rnn, plot='h', h_dims=h_dims, n_targets=n_targets)
-
-        return fig, ax
-
-    def _plot_rnn_output(self, rnn, h0=None, ax=None, n_targets=None, plot='z', h_dims=(0,3), title='Trained', legend=True, cbar=False):
-        s_seq, _ = self[:] if n_targets is None else self[:n_targets]
-        h_seq, z_seq = rnn(h0=h0, s_seq=s_seq)
-        if plot == 'z':
-            fig, ax = plot_parametric(z_seq, cbar=cbar, ax=ax, varname='z', title=title)
-
-            ax.scatter(*z_seq[:,0,:].T, c='k', label='Init', marker='o')
-            ax.scatter(*s_seq[:,0,:].T, c='k', label='Target', marker='*')
-        elif plot == 'h':
-            h_dims = slice(*h_dims)
-            fig, ax = plot_parametric(h_seq[:,:,h_dims], cbar=cbar, ax=ax, varname='h', title=title)
-
-            ax.scatter(*h_seq[:,0,h_dims].T, c='k', label='Init', marker='o')
-            h_target = (torch.linalg.pinv(rnn.Wz) @ s_seq[:,0,:].unsqueeze(-1)).squeeze(-1) #[h,z]@[b,z,1]->[b,h,1]->[b,h]
-            ax.scatter(*h_target[:,h_dims].T, c='k', label='Target $(h^* = W^+z^*)$', marker='*')
-        else:
-            raise ValueError()
-
-        if legend:
-            ax.legend()
-        ax.axis('square')
-        return fig, ax
 
 
     @torch.no_grad()
@@ -553,6 +558,61 @@ class ReachDataset(Dataset):
         y = rnn.obs_fn(h, z) #[b,t,y]
 
         return h, z, y, u
+
+################
+# RNN plotting #
+################
+def plot_rnn_output(dataset, rnn, plot='z', h_dims=(0,3), n_targets=None):
+    if hasattr(rnn, 'original'):
+        if plot == 'z':
+            fig, ax = plt.subplots(1,2, sharex='row', sharey='row', figsize=(10, 4))
+            _plot_rnn_output(dataset, rnn.original, plot=plot, ax=ax[0], n_targets=n_targets, legend=False)
+            h0 = rnn.original.h_seq[:,0,:]
+            _plot_rnn_output(dataset, rnn, plot=plot, h0=h0, ax=ax[1], n_targets=n_targets, title='Perturbed', cbar=True)
+            fig.set_size_inches(8.22, 4)
+        elif plot == 'h':
+            fig = plt.figure(figsize=(9, 4.5))
+            ax = np.array([fig.add_subplot(121, projection='3d'), fig.add_subplot(122, projection='3d')])
+            _plot_rnn_output(dataset, rnn.original, plot=plot, h_dims=h_dims, ax=ax[0], n_targets=n_targets, legend=False)
+
+            h0 = rnn.original.h_seq[:,0,:]
+            _plot_rnn_output(dataset, rnn, h0=h0, plot=plot, h_dims=h_dims, ax=ax[1], n_targets=n_targets, title='Perturbed')
+            fig.tight_layout()
+    else:
+        if plot == 'z':
+            fig, ax = _plot_rnn_output(dataset, rnn, plot=plot, n_targets=n_targets)
+        elif plot == 'h':
+            fig, ax = _plot_rnn_output(dataset, rnn, plot=plot, h_dims=h_dims, n_targets=n_targets)
+
+    return fig, ax
+
+
+def _plot_rnn_output(dataset, rnn, h0=None, ax=None, n_targets=None, plot='z', h_dims=(0,3), title='Trained', legend=True, cbar=False):
+    s_seq, z_tgt_seq = dataset[:n_targets]
+    h_seq, z_seq = rnn(h0=h0, s_seq=s_seq)
+    if len(z_tgt_seq.shape) == 2:
+        z_tgt_seq = F.one_hot(z_tgt_seq, num_classes=rnn.dim_z).float()
+
+    if plot == 'z':
+        fig, ax = plot_parametric(z_seq, cbar=cbar, ax=ax, varname='z', title=title)
+
+        ax.scatter(*z_seq[:,0,:3].T, c='k', label='Init', marker='o')
+        ax.scatter(*z_tgt_seq[:,0,:3].T, c='k', label='Target', marker='*')
+    elif plot == 'h':
+        h_dims = slice(*h_dims)
+        fig, ax = plot_parametric(h_seq[:,:,h_dims], cbar=cbar, ax=ax, varname='h', title=title)
+
+        ax.scatter(*h_seq[:,0,h_dims].T, c='k', label='Init', marker='o')
+        h_target = (torch.linalg.pinv(rnn.Wz) @ z_tgt_seq[:,0,:].unsqueeze(-1)).squeeze(-1) #[h,z]@[b,z,1]->[b,h,1]->[b,h]
+        ax.scatter(*h_target[:,h_dims].T, c='k', label='Target $(h^* = W^+ z^*)$', marker='*')
+    else:
+        raise ValueError()
+
+    if legend:
+        ax.legend()
+    ax.axis('square')
+    return fig, ax
+
 
 
 ###########

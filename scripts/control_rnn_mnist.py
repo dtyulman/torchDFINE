@@ -1,11 +1,12 @@
 from copy import deepcopy
 import os
+import sys
 from pprint import pprint
-os.environ['TQDM_DISABLE'] = '1'
 
 import numpy as np
 import torch
 from torch import nn
+from torch.nn import functional as F
 from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
 
@@ -15,50 +16,20 @@ from datasets import DFINEDataset
 from controllers import make_controller
 from closed_loop import make_closed_loop
 from script_utils import get_model, resume_training, Timer
-from plot_utils import plot_parametric, plot_vs_time, plot_eigvals, plot_high_dim
-from time_series_utils import z_score_tensor, compute_control_error, generate_input_noise
+from plot_utils import plot_parametric, plot_vs_time, plot_eigvals, plot_high_dim, subplots_square
+from time_series_utils import z_score_tensor, compute_control_error, generate_input_noise, generate_interpolated_inputs
 from python_utils import convert_to_tensor, WrapperModule, identity
 
+os.environ['TQDM_DISABLE'] = '1'
 np.set_printoptions(suppress=True)
 torch.set_printoptions(sci_mode=False)
-VERBOSE = True #global toggle for printing/plotting
 
-# torch.set_default_dtype(torch.float64)
-# torch.set_default_dtype(torch.float32)
-#%% Make RNN (Reach)
-rnn_config = {'seed': 10,
-              'load': False,
-              'save': False,
-              'perturb': False,
-              'rnn_kwargs': {'dim_h': 32, #hidden
-                             'dim_z': None, #output, inferred from dataset
-                             'dim_s': None, #task input, inferred from dataset
-                             'dim_u': None, #control input, equal to task input if control_task_input=True
-                             'train_bias': False,
-                             'obs_fn': 'h',
-                             'f': RNN.identity,
-                             'gain': 1,
-                             'control_task_input': True,
-                             'init_h': 'rand_unif'
-                             },
+VERBOSE = False #global toggle for printing/plotting
+DEBUG = False
 
-              'dataset_kwargs': {'name': 'reach',
-                                 'n_targets': 2**16,
-                                 'num_steps': 50,
-                                 'spacing': 'uniform'
-                                 },
-
-              'train_kwargs': {'epochs': 2,
-                                # 'loss_fn': RNN.MSELossVelocityPenalty(50),
-                               'batch_size': 64,
-                              }
-              }
-
-
-rnn, rnn_train_data = RNN.make_rnn(**rnn_config)
-rnn.requires_grad_(False)
-# rnn = RNN.make_perturbed_rnn(rnn.original, noise_std=0.2)
-
+#%% Uncomment to send this script to the cluster for execution via Slurm
+# from run_on_remote import run_me_on_remote
+# if not DEBUG: run_me_on_remote(); VERBOSE=False
 
 #%% Make RNN (MNIST)
 rnn_config = {'seed': 10,
@@ -81,24 +52,33 @@ rnn_config = {'seed': 10,
                                  'num_steps': 50,
                                  },
 
-              'train_kwargs': {'epochs': 2,
+              'train_kwargs': {'epochs': 2 if not DEBUG else 0,
                                'loss_fn': RNN.TimeAvgCrossEntropyLoss(),
                                'batch_size': 64,
                               }
               }
 
+tag = ''
+plant_str = (f"rnn_{rnn_config['dataset_kwargs']['name']}"
+             f"{f'_{tag}' if tag else ''}"
+             f"_nh={rnn_config['rnn_kwargs']['dim_h']}"
+             f"_y={rnn_config['rnn_kwargs']['obs_fn']}")
+print(plant_str)
+
+
 rnn, rnn_train_data = RNN.make_rnn(**rnn_config)
 rnn.requires_grad_(False)
 
-rnn_test_data = RNN.get_rnn_dataset(name='mnist', num_steps=50, train_or_test='test')
-batch_size = 1000
-for (rnn_data, train_or_test) in [(rnn_train_data, 'train'),(rnn_test_data, 'test')]:
-    correct = 0
-    for i in range(len(rnn_data)//batch_size):
-        inp, tgt = rnn_data[i*batch_size:(i+1)*batch_size]
-        _, out = rnn(s_seq=inp)
-        correct += (out.argmax(dim=-1)[:,-1] == tgt[:,-1]).sum()
-    print(f'avg {train_or_test} acc', (correct/len(rnn_data)).item())
+with Timer('Evaluating'):
+    rnn_test_data = RNN.get_rnn_dataset(name='mnist', num_steps=50, train_or_test='test')
+    batch_size = 1000
+    for (rnn_data, train_or_test) in [(rnn_train_data, 'train'),(rnn_test_data, 'test')]:
+        correct = 0
+        for i in range(len(rnn_data)//batch_size):
+            inp, tgt = rnn_data[i*batch_size:(i+1)*batch_size]
+            _, out = rnn(s_seq=inp)
+            correct += (out.argmax(dim=-1)[:,-1] == tgt[:,-1]).sum()
+        print(f'avg {train_or_test} acc', (correct/len(rnn_data)).item())
 
 #%%
 if VERBOSE:
@@ -108,93 +88,76 @@ if VERBOSE:
 
 #%%
 if VERBOSE:
-    rnn_train_data.num_steps = 50
-    n_targets = 10
-    fig, ax = RNN.plot_rnn_output(rnn_train_data, rnn, plot='z', n_targets=n_targets)
-    fig, ax = RNN.plot_rnn_output(rnn_train_data, rnn, plot='h', h_dims=(0,3), n_targets=n_targets)
+    s_seq, z_tgt_seq = rnn_train_data[:5]
+    h_seq, z_seq = rnn(s_seq=s_seq)
+    z_tgt_seq = F.one_hot(z_tgt_seq, num_classes=rnn.dim_z).float()
 
-#%%
-# z_target = rnn_train_data.targets[:1000]
-
-h_target = {}
-z_target_eff = {}
-_, h_target['true'], z_target_eff['true'] = RNN.make_y_target(rnn, z_target, h_target_mode='unperturbed', num_steps=rnn_train_data.num_steps)
-_, h_target['pinv'], z_target_eff['pinv'] = RNN.make_y_target(rnn, z_target, h_target_mode='pinv')
-
-# h_target['rand'] = 2*torch.rand_like(h_target['true'])-1
-
-#%%
-A, B, _, _ = RNN.effective_ldm_params(rnn)
-for key in ['true', 'pinv']:
-    is_in_controllable_subspace, proj, U_ctrb = SSM.is_in_controllable_subspace(h_target[key], A, B, verbose=True, return_projection=True)
-    h_target[f'{key}_proj'] = convert_to_tensor(proj)
-    z_target_eff[f'{key}_proj'] = rnn.compute_output(h_target[f'{key}_proj'])
-
-    print(f'h_target_{key}', is_in_controllable_subspace)
-
-#%%
-for key in h_target.keys():
-    print(f'h_target_{key} rank=', np.linalg.matrix_rank(h_target[key]))
-
-#%%
-
-fig = plt.figure()
-ax = fig.add_subplot()
-for key in ['true', 'pinv']:
-    sc = ax.scatter(*z_target_eff[key].T, label=key)
-    ax.scatter(*z_target_eff[f'{key}_proj'].T, label=f'{key}_proj', color=sc.get_facecolor(), marker='x')
-ax.set_xlabel('$z_1$')
-ax.set_ylabel('$z_2$')
-ax.legend()
-ax.axis('square')
-
-
-#%%
-axs = None
-for key in ['true', 'pinv']:
-    fig, axs = plot_high_dim(h_target[key], d=3, axs=axs, label=key, varname='h')
-    plot_high_dim(h_target[f'{key}_proj'], d=3, axs=axs, label=f'{key}_proj', marker='x', varname='h', same_color=True)
-
-
+    plot_vs_time(h_seq, varname='h')
+    plot_vs_time(z_seq, z_tgt_seq[:,0,:], varname='z')
 
 #%% Generate DFINE training data
-data_config = {'num_seqs': 2**18,
+data_config = {'num_seqs': 2**18 if not DEBUG else 2**11,
                'num_steps': 50,
-               'lo': -0.5,
-               'hi': 0.5,
-               'levels': 2,
-               'include_task_input': False,
-               'add_task_input_to_noise': False}
+               'excitation': 'data' #'noise', 'data'
+               # 'lo': 0,
+               # 'hi': 1,
+               # 'levels': 20,
+               # 'include_task_input': False,
+               # 'add_task_input_to_noise': False
+               }
+
+dfine_data_str = ''
+if data_config['excitation'] == 'noise':
+    dfine_data_str =f"u={data_config['lo']}-{data_config['hi']}-{data_config['levels']}"
+elif data_config['excitation'] == 'data':
+    dfine_data_str =f"_u=data"
 
 #%%
-h_dfine, z_dfine, y_dfine, u_dfine = rnn_train_data.generate_DFINE_dataset(rnn, **data_config)
-train_data = DFINEDataset(y=y_dfine, u=u_dfine)
+u_dfine = torch.empty(data_config['num_seqs'], data_config['num_steps'], rnn.dim_u)
+y_dfine = torch.empty(data_config['num_seqs'], data_config['num_steps'], rnn.dim_y)
+batch_size = 2**11
+_data_config = data_config.copy(); _data_config.pop('num_seqs')
+for i in range(data_config['num_seqs']//batch_size):
+    print(i)
+    if data_config['excitation'] == 'noise':
+        u_batch = generate_input_noise(rnn.dim_u, num_seqs=batch_size, **_data_config) #[b,t,u]
 
+    elif data_config['excitation'] == 'data':
+        mode = 'linear' if torch.rand(1) > 0.5 else 'hold'
+        samples_per_seq = torch.randint(3,6, (batch_size,))
+        u_batch = generate_interpolated_inputs(rnn_train_data.data, num_seqs=batch_size,
+                                               samples_per_seq=samples_per_seq, num_steps=data_config['num_steps'],
+                                               mode=mode)
 
-#%%
-
-u_dfine = generate_input_noise(rnn.dim_u, num_seqs=2**18, num_steps=50,
-                               lo=-0.5, hi=0.5, levels=2) #[b,t,u]
-
-batch_size = 2**14
-y_dfine = torch.empty(u_dfine.shape[0], u_dfine.shape[1], rnn.dim_y)
-for i in range(len(u_dfine)//batch_size):
-    u_batch = u_dfine[i*batch_size:(i+1)*batch_size]
+    u_dfine[i*batch_size:(i+1)*batch_size] = u_batch
     h_dfine, z_dfine = rnn(u_seq=u_batch)
     y_dfine[i*batch_size:(i+1)*batch_size] = rnn.obs_fn(h_dfine, z_dfine) #[b,t,y]
 
 train_data = DFINEDataset(y=y_dfine, u=u_dfine)
 
 
+
+#%%
+if VERBOSE:
+    u_2d = u_dfine.view(u_dfine.shape[0], u_dfine.shape[1], 28, 28)
+    for _ in range(10):
+        fig, axs = subplots_square(u_dfine.shape[1], rows=5)
+        for t,(u,ax) in enumerate(zip(u_2d[torch.randint(0, u_dfine.shape[0], (1,)).item()], axs.flatten())):
+            ax.imshow(u)
+            ax.set_title(f't={t}')
+        [ax.axis('off') for ax in axs.flatten()]
+        fig.tight_layout()
+
 #%%
 if VERBOSE:
     fig, ax = plot_parametric(z_dfine[:10], varname='z', title=f"RNN output $z(t)$ (train on $y={rnn_config['rnn_kwargs']['obs_fn']}$)")
     ax.axis('square')
+
 #%% Load, init, or train DFINE
 
 #Load
 # model_config = {
-#     'load_path': '/Users/dtyulman/Drive/dfine_ctrl/torchDFINE/results/train_logs/2024-12-25/20-32-27_rnn_reach_lin_ctrltsk_u=-0.5-0.5-2_y=h_nx=32_ny=32_nu=2',
+#     'load_path': '/Users/dtyulman/Drive/dfine_ctrl/torchDFINE/results/train_logs/2025-04-24/16-04-36_rnn_MNIST_mnist_u=0-1-20_y=h_nx=32_ny=32_nu=784',
 #     'ckpt': 80
 #     }
 
@@ -217,7 +180,7 @@ model_config = {
         'model.activation': 'relu',
 
         'train.plot_save_steps': 10,
-        'train.num_epochs': 100,
+        'train.num_epochs': 100 if not DEBUG else 0,
         'train.batch_size': 64,
         'lr.scheduler': 'constantlr',
         'lr.init': 0.001,
@@ -230,11 +193,9 @@ model_config = {
         }
     }
 
-tag = 'mnist'
-tag = f'_{tag}' if tag else ''
-save_str = (f"_rnn_{rnn_config['dataset_kwargs']['name']}{tag}"
-            f"_u={data_config['lo']}-{data_config['hi']}-{data_config['levels']}"
-            f"_y={rnn_config['rnn_kwargs']['obs_fn']}"
+
+save_str = (f"_{plant_str}"
+            f"_{dfine_data_str}"
             f"_nx={model_config['config']['model.dim_x']}"
             f"_ny={model_config['config']['model.dim_y']}"
             f"_nu={model_config['config']['model.dim_u']}")
@@ -249,6 +210,8 @@ if 'load_path' in model_config:
 else:
     torch.save((rnn, rnn_train_data), os.path.join(config.model.save_dir, 'rnn.pt'))
 
+sys.exit()
+
 #%%
 if VERBOSE:
     print(trainer.dfine)
@@ -259,16 +222,16 @@ if VERBOSE:
                                                   return_mats=True)
     pprint(dfine_ldm_properties)
 
+
 #%% Re-start/continue training
-resume_training(trainer, train_data, additional_epochs=200,
-                batch_size=128,
-                override_save_dir=None, override_lr=0.002)
+# resume_training(trainer, train_data, additional_epochs=200,
+#                 batch_size=model_config['config']['train.batch_size'],
+#                 override_save_dir=None, override_lr=0.002)
 
 
 #%% Set up control
-
 closed_loop_config = {'ground_truth': '',
-                      'suppress_plant_noise': True,
+                      # 'suppress_plant_noise': True,
                       }
 
 run_config = {'num_steps': 50,
@@ -283,14 +246,13 @@ run_config = {'num_steps': 50,
 #                   }
 
 control_config = {'mode': 'LQR',
-                  'R':1e-7,
-                    # 'Q': 1, #state
-                    'Qf': 1e8, #final state
-                    'horizon': run_config['num_steps']-run_config['t_on']-1,
-                  'penalize_obs': False, #Q ~ C^T @ C if True, else Q ~ I (same for Qf)
+                  'R':1,
+                  'Q': 1e6, #state
+                    # 'Qf': 1e8, #final state
+                    # 'horizon': run_config['num_steps']-run_config['t_on']-1,
+                  'penalize_obs': True, #Q ~ C^T @ C if True, else Q ~ I (same for Qf)
                     # 'include_u_ss': False,
                   }
-
 
 # control_config = {'mode': 'MinE',
 #                   'num_steps': run_config['num_steps']-run_config['t_on']-1,
@@ -299,11 +261,6 @@ control_config = {'mode': 'LQR',
 #                   }
 
 
-# actual target for z
-# z_target = rnn_train_data.targets #[b,z]
-z_target = torch.tensor([[1,1.],[1,-1],[-1,-1],[-1,1],[0,1],[1,0],[0,-1],[-1,0.]])/2
-# z_target = torch.cartesian_prod(torch.linspace(-1,1,2), torch.linspace(-1,1,2))
-
 # control_config = {'mode': 'const',
 #                   # 'const': z_target
 #                   }
@@ -311,13 +268,9 @@ z_target = torch.tensor([[1,1.],[1,-1],[-1,-1],[-1,1],[0,1],[1,0],[0,-1],[-1,0.]
 
 # Model
 dfine = deepcopy(trainer.dfine)
-dfine.encoder = dfine.decoder = WrapperModule(identity)
 
 # Plant
-# plant = rnn
-plant = SSM.make_ssm(dfine)
-plant.obs_fn = RNN.ObservationFunction(rnn, obs='h') #hack to make the NLSSM look like the RNN to the plot_outputs_2d function
-plant.compute_output = rnn.compute_output
+plant = rnn
 
 # Controller
 controller = make_controller(dfine, **control_config)
@@ -326,52 +279,44 @@ controller = make_controller(dfine, **control_config)
 closed_loop = make_closed_loop(plant=plant, dfine=dfine, controller=controller, **closed_loop_config)
 
 # Estimated target for y, and effective target for z if y_target calculated by first estimating the h_target
-h_target_mode = 'unperturbed'
-y_target, h_target, z_target = RNN.make_y_target(rnn, z_target, h_target_mode, num_steps=rnn_train_data.num_steps)
-
-rnn.init_h = 'zeros'
-aux_inputs = [{'s': z_target}] if data_config['include_task_input'] else None #[{'s':[b,z]}]}
-
+num_targets = 1
+idx = torch.randint(0,len(rnn_train_data),(num_targets,))
+z_target_input = rnn_train_data[idx][0][:,0,:] #[b,z]
+y_target, h_target, z_target = RNN.make_y_target(rnn, z_target=z_target_input, h_target_mode='unperturbed', num_steps=rnn_train_data.num_steps)
 
 
-#% Get target in x_hat space, project onto set of valid equilibria
+#%% Get target in x_hat space, project onto set of valid equilibria
 x_hat_target = closed_loop.model.estimate_target(y_target)
 
-x_hat_target_proj1 = controller.find_valid_equilibrium(x_hat_target, alg=1) # project it to nearest equilibrium
-x_hat_target_proj2 = controller.find_valid_equilibrium(x_hat_target, alg=2) # project it to nearest equilibrium
-# x_hat_target_proj3 = controller.find_valid_equilibrium(x_hat_target, closed_loop=True, alg=None) # project it to nearest equilibrium
+x_hat_target_proj_eq1 = controller.find_valid_equilibrium(x_hat_target, alg=1) # project it to nearest equilibrium
+x_hat_target_proj_eq2 = controller.find_valid_equilibrium(x_hat_target, alg=2) # project it to nearest equilibrium
+# # x_hat_target_proj3 = controller.find_valid_equilibrium(x_hat_target, closed_loop=True, alg=None) # project it to nearest equilibrium
 
-print((x_hat_target - x_hat_target_proj1).norm(dim=1))
-print((x_hat_target - x_hat_target_proj2).norm(dim=1))
-# print((x_hat_target - x_hat_target_proj3).norm(dim=1))
+x_hat_target_proj_ctrb, ctrb_basis, ctrb_svals = SSM.is_in_controllable_subspace(
+                                            x_hat_target, dfine.ldm.A, dfine.ldm.B,
+                                            rank=10)
 
-
-#% Get target in x_hat space, project onto controllable subspace
-x_hat_target_proj, Uc = SSM.is_in_controllable_subspace(
-                                            x_hat_target,
-                                            dfine.ldm.A, dfine.ldm.B,
-                                            rank=2
-                                            )
-
-print((x_hat_target - x_hat_target_proj).norm(dim=1))
+print('diff proj_eq1', (x_hat_target - x_hat_target_proj_eq1).norm(dim=1).numpy())
+print('diff proj_eq2', (x_hat_target - x_hat_target_proj_eq2).norm(dim=1).numpy())
+print('diff proj_ctrb', (x_hat_target - x_hat_target_proj_ctrb).norm(dim=1).numpy())
 
 
 #%% Visualize x_targets and their projections to controllable subspace
 fig, axs = plot_high_dim(x_hat_target, d=2, label='$\\widehat{x}^*$', varname='\\widehat{x}')
-plot_high_dim(x_hat_target_proj, axs=axs, label='$proj_{CTRB,'f'{Uc.shape[1]}''}(\\widehat{x}^*)$', marker='x', same_color=True)
+plot_high_dim(x_hat_target_proj_ctrb, axs=axs, label='$proj_{CTRB,'f'{Uc.shape[1]}''}(\\widehat{x}^*)$', marker='x', same_color=True)
 
 
 #%% Run control with y_target given in observation space
-closed_loop.run(y_target=y_target, aux_inputs=aux_inputs,
+closed_loop.run(y_target=y_target,
                 # plant_init='x_hat_target',
                 **run_config)
 pprint(RNN.compute_control_errors(closed_loop.plant, closed_loop.model))
 
 
 #%% Run control with x_hat_target given in model's latent space
-x_hat_target = x_hat_target_proj
+x_hat_target = x_hat_target_proj_eq1
 
-closed_loop.run(x_hat_target=x_hat_target, aux_inputs=aux_inputs,
+closed_loop.run(x_hat_target=x_hat_target,
                 # plant_init='x_hat_target',
                 **run_config)
 pprint(RNN.compute_control_errors(closed_loop.plant, closed_loop.model))
