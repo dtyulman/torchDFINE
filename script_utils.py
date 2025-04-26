@@ -37,6 +37,7 @@ def get_model(config=None, train_data=None, load_path=None, ckpt=None, ground_tr
     c) Train a new model. Specify config dict which optionally includes savedir_suffix.
     """
     if load_path: #get_model(load_path, ckpt)
+        # Load the model and its config from load_path
         assert config is None and ground_truth is None
         config = load_config(load_path, ckpt)
         trainer = TrainerDFINE(config)
@@ -65,6 +66,7 @@ def get_model(config=None, train_data=None, load_path=None, ckpt=None, ground_tr
 
 
     else: #get_model(config, train_data)
+        # Train the model from scratch
         assert load_path is None and ckpt is None and ground_truth is None
 
         #ensure that there is no bottleneck in y->a transformation
@@ -84,7 +86,7 @@ def get_model(config=None, train_data=None, load_path=None, ckpt=None, ground_tr
 
 
 
-def resume_training(trainer, train_data, additional_epochs=1, batch_size=64, override_save_dir=None, override_lr=None):
+def resume_training(trainer, train_data, start_epoch=-1, additional_epochs=1, batch_size=None, override_save_dir=None, override_lr=None):
     from torch.utils.tensorboard import SummaryWriter
 
     #fix save dir
@@ -102,10 +104,10 @@ def resume_training(trainer, train_data, additional_epochs=1, batch_size=64, ove
         trainer.lr_scheduler = trainer._get_lr_scheduler()
 
     #extend epochs
-    trainer.start_epoch = trainer.config.train.num_epochs + 1
+    trainer.start_epoch = trainer.config.train.num_epochs+1 if start_epoch == -1 else start_epoch
     trainer.config.train.num_epochs = trainer.start_epoch + additional_epochs
 
     #make dataloader
     trainer.dfine.requires_grad_()
-    train_loader = DataLoader(train_data, batch_size=batch_size)
+    train_loader = DataLoader(train_data, batch_size=batch_size or trainer.config.train.batch_size)
     trainer.train(train_loader)

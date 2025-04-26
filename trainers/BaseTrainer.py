@@ -196,7 +196,13 @@ class BaseTrainer:
         '''
 
         self.logger.warning('Optimizer and LR scheduler can be loaded only in resume_train mode, else they are re-initialized')
-        load_path = os.path.join(self.config.model.save_dir, 'ckpts', f'{self.config.load.ckpt}_ckpt.pth')
+
+        ckpts_dir = os.path.join(self.config.model.save_dir, 'ckpts')
+        ckpt = self.config.load.ckpt
+        if ckpt == 'last':
+            ckpt = max(int(f[:-10]) for f in os.listdir(ckpts_dir) if f.endswith('_ckpt.pth') and f[:-10].isdigit())
+        load_path = os.path.join(ckpts_dir, f'{ckpt}_ckpt.pth')
+
         self.logger.info(f'Loading model from: {load_path}...')
 
         # Load the checkpoint

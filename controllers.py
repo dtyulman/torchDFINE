@@ -382,10 +382,15 @@ def find_nearest_solution(M, B, z, alg=1):
     return x.squeeze(-1)
 
 
-def make_controller(dfine, mode='LQR', **kwargs):
-    A = dfine.ldm.A.detach().clone()
-    B = dfine.ldm.B.detach().clone()
-    C = dfine.ldm.C.detach().clone()
+def make_controller(dfine, mode='LQR', clone_mats=True, **kwargs):
+    A = dfine.ldm.A
+    B = dfine.ldm.B
+    C = dfine.ldm.C
+    if clone_mats:
+        A = A.detach().clone()
+        B = B.detach().clone()
+        C = C.detach().clone()
+
     if mode == 'LQR':
         controller = LinearQuadraticRegulator(A,B,C, **kwargs)
     elif mode == 'MPC':

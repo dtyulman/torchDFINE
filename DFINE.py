@@ -438,9 +438,7 @@ class DFINE(nn.Module):
         # L2 regularization loss
         reg_loss = torch.tensor(0.)
         if self.scale_l2 > 0:
-            for name, param in self.named_parameters():
-                if 'weight' in name:
-                    reg_loss = reg_loss + self.scale_l2 * torch.norm(param)
+            self.scale_l2 * sum([torch.norm(param) for name, param in self.named_parameters() if 'weight' in name])
             loss_dict['reg_loss'] = reg_loss
 
 
@@ -456,14 +454,14 @@ class DFINE(nn.Module):
         control_loss = torch.tensor(0.)
         if y_target_cl is not None:
             #TODO: should I use y_hat from closed-loop, or from open-loop in model_vars?
-            # are they identical? --> no, but torch.allclose==True
+            # are they identical? --> maybe... torch.allclose==True
             # are their computation graphs? (assuming I don't detach u before putting into dfine.forward)
             # if I don't detach, how will this affect the k-step-ahead computation graph?
 
             # y_hat_T is fn of u_{1:T},
             # u_t is fn of A,B,C,x_hat_t,
             # x_hat_t is fn of A,B,C,\theta,x_hat_{t-1},a_hat_t
-            # a_hat_t is fn of y_t
+            # a_hat_t is fn of \phi,y_t
             y_hat_T = y_hat_cl[:,-1,:] #model_vars['y_filter'][:,-1,:]  #[b,y]
 
             control_mse = F.mse_loss(y_hat_T, y_target_cl)

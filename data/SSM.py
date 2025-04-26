@@ -273,7 +273,7 @@ class NonlinearEmbeddingBase():
         raise NotImplementedError('Override this method')
 
 
-    def _plot_manifold(self, *args, ax=None):
+    def _plot_manifold(self, *args, ax=None, **kwargs):
         if ax is None:
             fig = plt.figure()
             ax = fig.add_subplot(projection='3d')
@@ -281,7 +281,7 @@ class NonlinearEmbeddingBase():
             fig = ax.get_figure()
 
         y = self.nonlin_embed(*args)
-        ax.scatter(*y.T, color='grey', alpha=0.2, marker='.', s=2)
+        ax.scatter(*y.T, color='grey', alpha=kwargs.pop('alpha', 0.2), marker='.', s=2)
         return fig, ax
 
     def plot_manifold(self):
@@ -304,9 +304,14 @@ class RingManifold(NonlinearEmbeddingBase):
         return e
 
 
-    def plot_manifold(self, samples=100, ax=None):
+    def __repr__(self):
+        return (f'T={self.projection_matrix.numpy()}\n'
+                f'e=[cos(a); sin(2a); sin(a)]')
+
+
+    def plot_manifold(self, samples=100, ax=None, **kwargs):
         a = torch.linspace(0, 2*torch.pi, samples).unsqueeze(-1)
-        return self._plot_manifold(a, ax=ax)
+        return self._plot_manifold(a, ax=ax, **kwargs)
 
 
 
@@ -553,9 +558,10 @@ def is_in_controllable_subspace(x, A,B, rank=None):
 
     U, S, Vh = torch.linalg.svd(CC, full_matrices=False) #[x,x],[x],[x,x*u] (full_matrices=True gives Vh [x*u,x*u])
     Ur = U[:, :rank]
+    Sr = S[:rank]
     x_proj = (Ur @ (Ur.T @ x.unsqueeze(-1))).squeeze(-1)
 
-    return x_proj, Ur
+    return x_proj, Ur, Sr
 
 
 def get_ldm_properties(A,B,C, verbose=True, return_mats=False):

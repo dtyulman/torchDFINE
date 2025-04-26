@@ -213,10 +213,11 @@ def plot_high_dim(x, d=2, axs=None, label=None, varname='dim', same_color=False,
         color = ax.collections[-1].get_facecolor() if same_color else kwargs.pop('color', None)
         ax.scatter(*x[:,dims].T, label=label, color=color, **kwargs)
 
-        ax.set_xlabel(f'${varname}_{{' f'{d*i}' '}$')
-        ax.set_ylabel(f'${varname}_{{' f'{d*i+1}' '}$')
-        if d==3:
-            ax.set_zlabel(f'${varname}_{{' f'{d*i+2}' '}$')
+        if axs is None:
+            ax.set_xlabel(f'${varname}_{{' f'{d*i}' '}$')
+            ax.set_ylabel(f'${varname}_{{' f'{d*i+1}' '}$')
+            if d==3:
+                ax.set_zlabel(f'${varname}_{{' f'{d*i+2}' '}$')
 
         if i == 0:
             ax.legend()
@@ -269,6 +270,6 @@ def subplots_square(num_subplots, rows=None, cols=None, force=False, **kwargs):
     if num_subplots > 400 and force==False:
         raise RuntimeWarning("Too many plots ({num_subplots}). To override, pass 'force=True' as second argument.")
 
-    rows, cols = int_sqrt(num_subplots)
+    rows, cols = int_sqrt(num_subplots, r=rows, c=cols)
     fig, ax = plt.subplots(rows,cols, **kwargs)
     return fig, ax

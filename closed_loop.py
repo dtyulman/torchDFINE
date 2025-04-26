@@ -235,7 +235,7 @@ class DFINE_Wrapper:
             plot_vs_time(seq_i, target_i, varname=varname, t_on=t_on, t_off=t_off,
                          ax=ax, max_N=nrows, legend=True, color=color, label=label)
 
-            axs[0,ax_num].set_title(var_names[varname])
+            axs[0,ax_num].set_title(f'{var_names[varname]} ($n_{varname}$={dim_v})')
             return ax
 
 
@@ -248,7 +248,7 @@ class DFINE_Wrapper:
 
         # Manifold latents a
         if 'a' in plot_vars:
-            plot(self.a_hat, self.a_hat_target, 'a', color='tab:blue', label=r'$\widehat{a}$')
+            plot(self.a_hat,     self.a_hat_target,     'a', color='tab:blue', label=r'$\widehat{a}$')
             plot(self.a_hat_fwd, self.a_hat_fwd_target, 'a', color='tab:green', label=r'$\widetilde{a}$')
             if a is not None or a_target is not None:
                 a = torch.full_like(self.a_hat, float('nan')) if a is None else a
@@ -256,8 +256,10 @@ class DFINE_Wrapper:
 
         # Observations y
         if 'y' in plot_vars:
-            plot(self.y_hat,     self.y_hat_target,     'y', color='tab:green', label=r'$\widehat{y}$')
-            plot(self.y,         self.y_target,         'y', color='tab:orange', label='$y$')
+            plot(self.y_hat, self.y_hat_target, 'y', color='tab:green', label=r'$\widehat{y}$')
+            plot(self.y,     self.y_target,     'y', color='tab:orange', label='$y$')
+            # plot(self.y*float('nan'),     self.y_target,     'y', color='tab:orange', label='$y$')
+
 
         # Control inputs u
         if 'u' in plot_vars:

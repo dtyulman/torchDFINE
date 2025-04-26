@@ -29,7 +29,7 @@ _config.model.dim_y = None # Dimensionality of neural observations
 _config.model.dim_a = None # Dimensionality of manifold latent factor, a choice higher than dim_y (above) may lead to overfitting
 _config.model.dim_x = None # Dimensionality of dynamic latent factor, it's recommended to set it same as dim_a (above), please see Extended Data Fig. 8
 _config.model.dim_u = None # Dimensionality of control input
-_config.model.init_A_scale = 1 # Initialization scale of LDM state transition matrix
+_config.model.init_A_scale = .95 # Initialization scale of LDM state transition matrix
 _config.model.init_B_scale = 1 # Initialization scale of LDM control-input matrix
 _config.model.init_C_scale = 1 # Initialization scale of LDM observation matrix
 _config.model.init_D_scale = 1 # Initialization scale of LDM feed-through matrix
@@ -54,7 +54,7 @@ _config.loss = CN()
 _config.loss.steps_ahead = [1,2,3,4] # List of number of steps ahead for which DFINE is optimized. For unsupervised and supervised versions, default values are [1,2,3,4] and [1,2], respectively.
 _config.loss.scale_steps_ahead = [1.,1.,1.,1.] #relative weighting of each step ahead. Can be zero to calculate that step-ahead prediction but not include it in the final loss
 _config.loss.scale_l2 = 2e-3 # L2 regularization loss scale (we recommend a grid-search for the best value, i.e., a grid of [1e-4, 5e-4, 1e-3, 2e-3]). Please use 0 for nonlinear manifold simulations as it leads to a better performance.
-_config.loss.scale_control_loss = 0
+_config.loss.scale_control_loss = 0.
 _config.loss.scale_behv_recons = 20 # If _config.model.supervise_behv is True, scale for MSE of behavior reconstruction (We recommend a grid-search for the best value. It should be set to a large value).
 _config.loss.scale_spectr_reg_B = 0
 _config.loss.scale_forward_pred = 0 # Loss scale for forward prediction loss (output is predicted solely from the input)
@@ -134,7 +134,6 @@ def load_config(path, ckpt=None):
     config.merge_from_file(path)
     config.load.ckpt = ckpt or config.train.num_epochs
     return config
-
 
 
 def make_savedir_suffix(config, **kwargs):
