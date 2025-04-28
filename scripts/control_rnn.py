@@ -59,47 +59,6 @@ rnn, rnn_train_data = RNN.make_rnn(**rnn_config)
 rnn.requires_grad_(False)
 # rnn = RNN.make_perturbed_rnn(rnn.original, noise_std=0.2)
 
-
-#%% Make RNN (MNIST)
-rnn_config = {'seed': 10,
-              'load': False,
-              'save': False,
-              'perturb': False,
-              'rnn_kwargs': {'dim_h': 32, #hidden
-                             'dim_z': 10, #output, inferred from dataset
-                             'dim_s': None, #task input, inferred from dataset
-                             'dim_u': None, #control input, equal to task input if control_task_input=True
-                             'train_bias': False,
-                             'obs_fn': 'h',
-                             'f': torch.tanh,
-                             'gain': 0.8,
-                             'control_task_input': True,
-                             'init_h': 'rand_unif'
-                             },
-
-              'dataset_kwargs': {'name': 'MNIST',
-                                 'num_steps': 50,
-                                 },
-
-              'train_kwargs': {'epochs': 2,
-                               'loss_fn': RNN.TimeAvgCrossEntropyLoss(),
-                               'batch_size': 64,
-                              }
-              }
-
-rnn, rnn_train_data = RNN.make_rnn(**rnn_config)
-rnn.requires_grad_(False)
-
-rnn_test_data = RNN.get_rnn_dataset(name='mnist', num_steps=50, train_or_test='test')
-batch_size = 1000
-for (rnn_data, train_or_test) in [(rnn_train_data, 'train'),(rnn_test_data, 'test')]:
-    correct = 0
-    for i in range(len(rnn_data)//batch_size):
-        inp, tgt = rnn_data[i*batch_size:(i+1)*batch_size]
-        _, out = rnn(s_seq=inp)
-        correct += (out.argmax(dim=-1)[:,-1] == tgt[:,-1]).sum()
-    print(f'avg {train_or_test} acc', (correct/len(rnn_data)).item())
-
 #%%
 if VERBOSE:
     if rnn.f.__name__ == 'identity': #if rnn.f == RNN.identity:
@@ -156,7 +115,6 @@ for key in ['true', 'pinv']:
     plot_high_dim(h_target[f'{key}_proj'], d=3, axs=axs, label=f'{key}_proj', marker='x', varname='h', same_color=True)
 
 
-
 #%% Generate DFINE training data
 data_config = {'num_seqs': 2**18,
                'num_steps': 50,
@@ -166,25 +124,8 @@ data_config = {'num_seqs': 2**18,
                'include_task_input': False,
                'add_task_input_to_noise': False}
 
-#%%
 h_dfine, z_dfine, y_dfine, u_dfine = rnn_train_data.generate_DFINE_dataset(rnn, **data_config)
 train_data = DFINEDataset(y=y_dfine, u=u_dfine)
-
-
-#%%
-
-u_dfine = generate_input_noise(rnn.dim_u, num_seqs=2**18, num_steps=50,
-                               lo=-0.5, hi=0.5, levels=2) #[b,t,u]
-
-batch_size = 2**14
-y_dfine = torch.empty(u_dfine.shape[0], u_dfine.shape[1], rnn.dim_y)
-for i in range(len(u_dfine)//batch_size):
-    u_batch = u_dfine[i*batch_size:(i+1)*batch_size]
-    h_dfine, z_dfine = rnn(u_seq=u_batch)
-    y_dfine[i*batch_size:(i+1)*batch_size] = rnn.obs_fn(h_dfine, z_dfine) #[b,t,y]
-
-train_data = DFINEDataset(y=y_dfine, u=u_dfine)
-
 
 #%%
 if VERBOSE:
@@ -311,7 +252,7 @@ z_target = torch.tensor([[1,1.],[1,-1],[-1,-1],[-1,1],[0,1],[1,0],[0,-1],[-1,0.]
 
 # Model
 dfine = deepcopy(trainer.dfine)
-dfine.encoder = dfine.decoder = WrapperModule(identity)
+# dfine.encoder = dfine.decoder = WrapperModule(identity)
 
 # Plant
 # plant = rnn
