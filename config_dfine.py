@@ -121,6 +121,8 @@ def make_config(savedir_suffix='', **config_kwargs):
     config = update_config(config, config_kwargs, new_is_flat=True)
     if config.model.dim_a is None:
         config.model.dim_a = config.model.dim_x
+    if config.model.hidden_layer_list is None:
+        config.model.activation = None
 
     return config
 

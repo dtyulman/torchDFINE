@@ -5,14 +5,14 @@ Hamidreza Abbaspourazad*, Eray Erturk* and Maryam M. Shanechi
 Shanechi Lab, University of Southern California
 '''
 
-from modules.LDM import LDM
-from modules.MLP import MLP
-from nn import get_kernel_initializer_function, compute_mse, get_activation_function
-
 import torch
 from torch import nn
 from torch.nn import functional as F
 
+from modules.LDM import LDM
+from modules.MLP import MLP
+from nn import get_kernel_initializer_function, compute_mse, get_activation_function
+from python_utils import WrapperModule, identity
 
 class DFINE(nn.Module):
     '''
@@ -78,7 +78,8 @@ class DFINE(nn.Module):
             # Make these a passthrough, thus setting the manifold latent to be equal to the observation and reducing the model to a simple LDM
             assert self.dim_y == self.dim_a, 'Manifold latent and observation dimensions must be equal if not using autoencoder'
             assert self.config.model.activation is None, 'Do not provide activation if not using autoencoder'
-            self.encoder = self.decoder = lambda x: x
+            self.encoder = self.decoder = WrapperModule(identity)
+
         else:
             # Initialize the autoencoder
             self.encoder = self._get_MLP(input_dim=self.dim_y,

@@ -67,7 +67,7 @@ class TrainerDFINE(BaseTrainer):
         self.lr_scheduler = self._get_lr_scheduler()
 
         # Load ckpt if asked, model with best validation model loss can be loaded as well, which is saved with name 'best_loss_ckpt.pth'
-        if (isinstance(self.config.load.ckpt, int) and self.config.load.ckpt > 1) or isinstance(self.config.load.ckpt, str):
+        if (isinstance(self.config.load.ckpt, int) and self.config.load.ckpt >= 1) or isinstance(self.config.load.ckpt, str):
             self.dfine, self.optimizer, self.lr_scheduler = self._load_ckpt(model=self.dfine,
                                                                             optimizer=self.optimizer,
                                                                             lr_scheduler=self.lr_scheduler)
