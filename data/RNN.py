@@ -10,8 +10,7 @@ from torch.utils.data import Dataset, DataLoader
 import numpy as np
 import matplotlib.pyplot as plt
 
-from python_utils import verify_shape, verify_output_dim, linspace, tile_to_shape, WrapperModule, identity
-from script_utils import Timer
+from python_utils import verify_shape, linspace, tile_to_shape, WrapperModule, identity, Timer
 from plot_utils import plot_parametric
 from time_series_utils import generate_input_noise, compute_control_error
 import data.SSM as SSM
@@ -419,7 +418,7 @@ def make_rnn(rnn_kwargs, dataset_kwargs, train_kwargs, seed=None, load=False, sa
         for i, dim in enumerate(['dim_s', 'dim_z']):
             if dim not in rnn_kwargs or rnn_kwargs[dim] is None:
                 rnn_kwargs[dim] = dataset[0][i].shape[-1]
-            if dataset_kwargs['name'].lower() != 'mnist' and dim != dim_z:
+            if dataset_kwargs['name'].lower() != 'mnist' and dim != 'dim_z':
                 assert rnn_kwargs[dim] == dataset[0][i].shape[-1]
 
         rnn = RNN(**rnn_kwargs)

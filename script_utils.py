@@ -1,33 +1,11 @@
 import os
-import timeit
 
-import torch
 from torch.utils.data import DataLoader
 
 import data.RNN as RNN
 import data.SSM as SSM
 from config_dfine import make_config, load_config
 from trainers.TrainerDFINE import TrainerDFINE
-
-
-class Timer:
-    """http://preshing.com/20110924/timing-your-code-using-pythons-with-statement/"""
-    def __init__(self, name='Timer', verbose=True):
-        self.name = name
-        self.verbose = verbose
-
-    def __enter__(self):
-        if self.verbose:
-            print( 'Starting {}...'.format(self.name) )
-        self.start = timeit.default_timer()
-        return self
-
-    def __exit__(self, *args):
-        self.end = timeit.default_timer()
-        self.elapsed = self.end - self.start
-        if self.verbose:
-            print( '{}: elapsed {} sec'.format(self.name, self.elapsed) )
-
 
 
 def get_model(config=None, train_data=None, load_path=None, ckpt=None, ground_truth=None):
@@ -40,6 +18,7 @@ def get_model(config=None, train_data=None, load_path=None, ckpt=None, ground_tr
         # Load the model and its config from load_path
         assert config is None and ground_truth is None
         config = load_config(load_path, ckpt)
+        config.model.save_dir = load_path
         trainer = TrainerDFINE(config)
 
     elif ground_truth: #get_model(ground_truth=ssm)
@@ -70,7 +49,8 @@ def get_model(config=None, train_data=None, load_path=None, ckpt=None, ground_tr
         assert load_path is None and ckpt is None and ground_truth is None
 
         #ensure that there is no bottleneck in y->a transformation
-        assert all([nl >= config['model.dim_a'] for nl in config['model.hidden_layer_list']])
+        if config['model.hidden_layer_list']:
+            assert all([nl >= config['model.dim_a'] for nl in config['model.hidden_layer_list']])
 
         config = make_config(**config)
         trainer = TrainerDFINE(config)

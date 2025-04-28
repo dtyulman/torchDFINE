@@ -14,7 +14,7 @@ import data.SSM as SSM
 from datasets import ControlledDFINEDataset, TargetGenerator, DFINEDataset
 from controllers import make_controller
 from closed_loop import make_closed_loop
-from script_utils import get_model, resume_training, Timer
+from script_utils import get_model, resume_training
 from plot_utils import plot_parametric, plot_vs_time, plot_eigvals, plot_high_dim
 from time_series_utils import z_score_tensor, compute_control_error
 from python_utils import convert_to_tensor, WrapperModule, identity

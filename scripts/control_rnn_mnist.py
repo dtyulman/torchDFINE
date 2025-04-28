@@ -15,10 +15,10 @@ import data.SSM as SSM
 from datasets import DFINEDataset
 from controllers import make_controller
 from closed_loop import make_closed_loop
-from script_utils import get_model, resume_training, Timer
+from script_utils import get_model, resume_training
 from plot_utils import plot_parametric, plot_vs_time, plot_eigvals, plot_high_dim, subplots_square
 from time_series_utils import z_score_tensor, compute_control_error, generate_input_noise, generate_interpolated_inputs
-from python_utils import convert_to_tensor, WrapperModule, identity
+from python_utils import convert_to_tensor, WrapperModule, identity, Timer
 
 os.environ['TQDM_DISABLE'] = '1'
 np.set_printoptions(suppress=True)
