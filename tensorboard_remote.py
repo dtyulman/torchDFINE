@@ -1,10 +1,11 @@
 #!/usr/bin/env python
-
 """Run tensorboard on remote, port forward, and open in browser"""
 import os, subprocess, time, webbrowser, random, threading, argparse, datetime
 import urllib.request
 from remote_config import REMOTE_SERVER, REMOTE_PATH, USERNAME
 
+
+# Get/check args/constants
 parser = argparse.ArgumentParser(description="Launch TensorBoard on cluster via Slurm.")
 parser.add_argument('--date', type=str, default=None, help="Date string in YYYY-MM-DD format. Defaults to today.")
 args = parser.parse_args()
@@ -18,8 +19,15 @@ TENSORBOARD_LOGFILE = 'tensorboard.out'
 TENSORBOARD_PORT = random.randint(15000, 25000) #random high port to avoid conflicts
 LOCAL_PORT = TENSORBOARD_PORT  #same port locally
 
+check_logdir_cmd = ["ssh", REMOTE_SERVER, f"test -d {REMOTE_LOGDIR}"]
+result = subprocess.run(check_logdir_cmd)
+if result.returncode != 0:
+    list_dates_cmd = ["ssh", REMOTE_SERVER, f"ls -1 {os.path.join(REMOTE_PATH, 'results', 'train_logs')}"]
+    available_dates = subprocess.check_output(list_dates_cmd, text=True).splitlines()
+    raise RuntimeError(f"Remote logdir {REMOTE_LOGDIR} does not exist. Available dates:\n" + "\n".join(available_dates))
 
-#Build the SLURM script
+
+#Build the SLURM script command
 slurm_script = f"""#!/bin/bash
 #SBATCH --job-name=tensorboard
 #SBATCH --partition=main
@@ -28,6 +36,7 @@ slurm_script = f"""#!/bin/bash
 
 tensorboard --logdir {REMOTE_LOGDIR} --port {TENSORBOARD_PORT} --host 127.0.0.1
 """
+
 
 #Submit SLURM job
 print(f"Opening TensorBoard at {REMOTE_SERVER}:{REMOTE_LOGDIR}")
@@ -50,13 +59,15 @@ while node_name is None:
         continue
 print(f"Job is running on node: {node_name}")
 
+
 #Set up SSH tunnels
-print("Starting SSH tunnel: local → login → compute...")
+print("Starting SSH tunnel: local → login node → compute node...")
 local_to_login = subprocess.Popen(["ssh", "-N", "-L", f"{LOCAL_PORT}:localhost:{LOCAL_PORT}", REMOTE_SERVER])
 login_to_compute = subprocess.Popen(["ssh", REMOTE_SERVER, f"ssh -N -L {LOCAL_PORT}:localhost:{TENSORBOARD_PORT} {USERNAME}@{node_name}"])
 
+
 #Start log tailing (non-buffered, line-by-line)
-print("Starting live log stream...")
+print("Starting log stream...")
 tail_cmd = ["ssh", REMOTE_SERVER, f"tail -n +1 -F {TENSORBOARD_LOGFILE}"]
 tail_proc = subprocess.Popen(tail_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
 
@@ -67,7 +78,7 @@ stream_thread = threading.Thread(target=stream_tail_output, args=(tail_proc,), d
 stream_thread.start()
 
 
-#Open browser
+#Open browser once TensorBoard starts
 url = f"http://localhost:{LOCAL_PORT}"
 print(f"Waiting for TensorBoard to become available at {url}...")
 timeout_seconds = 60
@@ -87,7 +98,7 @@ while True:
 
 #Cleanup
 try:
-    print("Tunnels established. Live logs are streaming below. Press Ctrl+C to terminate.")
+    print("Tunnels established. Logs are streaming below. Press Ctrl+C to terminate.")
     while True:
         time.sleep(2)
         if tail_proc.poll() is not None:
