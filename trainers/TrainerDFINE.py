@@ -6,6 +6,8 @@ Shanechi Lab, University of Southern California
 '''
 
 import os
+from collections import defaultdict
+
 import torch
 from torch.nn.utils import clip_grad_norm_
 from tqdm import tqdm
@@ -17,7 +19,6 @@ import matplotlib.pyplot as plt
 
 from trainers.BaseTrainer import BaseTrainer
 from DFINE import DFINE
-from config_dfine import get_default_config
 from python_utils import carry_to_device
 from time_series_utils import get_nrmse_error
 from metrics import Mean
@@ -73,62 +74,11 @@ class TrainerDFINE(BaseTrainer):
                                                                             lr_scheduler=self.lr_scheduler)
 
         # Get the metrics
-        self.metric_names, self.metrics = self._get_metrics()
+        self.metrics = {'train': defaultdict(Mean),
+                        'valid': defaultdict(Mean)}
 
         # Save the config
         self._save_config()
-
-
-    def _get_metrics(self):
-        '''
-        Creates the metric names and nested metrics dictionary.
-
-        Returns:
-        ------------
-        - metric_names: list, Metric names to log in Tensorboard, which are the keys of train/valid defined below
-        - metrics_dictionary: dict, nested metrics dictionary. Keys (and metric_names) are (e.g. for config.loss.steps_ahead = [1,2]):
-            - train:
-                - steps_{k}_mse: metrics.Mean, Training {k}-step ahead predicted MSE
-                - model_loss: metrics.Mean, Training negative sum of {k}-step ahead predicted MSEs (e.g. steps_1_mse + steps_2_mse)
-                - reg_loss: metrics.Mean, L2 regularization loss for DFINE encoder and decoder weights
-                - behv_mse: metrics.Mean, Exists if config.model.supervise_behv is True, Training behavior MSE
-                - behv_loss: metrics.Mean, Exists if config.model.supervise_behv is True, Training behavior reconstruction loss
-                - total_loss: metrics.Mean, Sum of training model_loss, reg_loss and behv_loss (if config.model.supervise_behv is True)
-            - valid:
-                - steps_{k}_mse: metrics.Mean, Validation {k}-step ahead predicted MSE
-                - model_loss: metrics.Mean, Validation negative sum of {k}-step ahead predicted MSEs (e.g. steps_1_mse + steps_2_mse)
-                - reg_loss: metrics.Mean, L2 regularization loss for DFINE encoder and decoder weights
-                - behv_mse: metrics.Mean, Exists if config.model.supervise_behv is True, Validation behavior MSE
-                - behv_loss: metrics.Mean, Exists if config.model.supervise_behv is True, Validation behavior reconstruction loss
-                - total_loss: metrics.Mean, Sum of validation model_loss, reg_loss and behv_loss (if config.model.supervise_behv is True)
-        '''
-
-        metric_names = []
-        for k in self.config.loss.steps_ahead:
-            metric_names.append(f'steps_{k}_mse')
-        metric_names.append('model_loss')
-        if self.config.model.supervise_behv:
-            metric_names.append('behv_mse')
-            metric_names.append('behv_loss')
-        metric_names.append('reg_loss')
-        metric_names.append('control_mse')
-        metric_names.append('control_loss')
-        metric_names.append('spectr_reg_B_loss')
-        metric_names.append('dyn_x_loss')
-        metric_names.append('con_a_loss')
-        metric_names.append('dyn_x_mse')
-        metric_names.append('con_a_mse')
-        metric_names.append('total_loss')
-
-        metrics = {}
-        metrics['train'] = {}
-        metrics['valid'] = {}
-
-        for key in metric_names:
-            metrics['train'][key] = Mean()
-            metrics['valid'][key] = Mean()
-
-        return metric_names, metrics
 
 
     def _get_log_str(self, epoch, train_valid='train'):
@@ -243,8 +193,7 @@ class TrainerDFINE(BaseTrainer):
                 # Update metrics
                 self._update_metrics(loss_dict=loss_dict,
                                      batch_size=y_batch.shape[0],
-                                     train_valid='train',
-                                     verbose=False)
+                                     train_valid='train')
 
                 # Update the step
                 if step%10 == 0:
@@ -325,8 +274,7 @@ class TrainerDFINE(BaseTrainer):
                     # Update metrics
                     self._update_metrics(loss_dict=loss_dict,
                                          batch_size=y_batch.shape[0],
-                                         train_valid='valid',
-                                         verbose=False)
+                                         train_valid='valid')
 
             # Perform one-step-ahead prediction on the provided validation data, for evaluation
             y_all = torch.cat(y_all, dim=0)

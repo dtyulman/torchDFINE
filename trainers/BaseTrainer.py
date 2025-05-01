@@ -111,7 +111,7 @@ class BaseTrainer:
             metric.reset()
 
 
-    def _update_metrics(self, loss_dict, batch_size, train_valid='train', verbose=True):
+    def _update_metrics(self, loss_dict, batch_size, train_valid='train'):
         '''
         Updates the metrics
 
@@ -120,15 +120,10 @@ class BaseTrainer:
         - loss_dict: dict, Dictionary with loss values to log in Tensorboard
         - batch_size: int, Number of trials for which the metrics are computed for
         - train_valid, str, Which metrics to update, 'train' by default
-        - verbose: bool, Whether to print the warning if a key in metric_names doesn't exist in loss_dict
         '''
 
-        for key in self.metric_names:
-            if key not in loss_dict:
-                if verbose:
-                    self.logger.warning(f'{key} does not exist in loss_dict, metric cannot be updated!')
-            else:
-                self.metrics[train_valid][key].update(loss_dict[key], batch_size)
+        for key in loss_dict:
+            self.metrics[train_valid][key].update(loss_dict[key], batch_size)
 
 
     def _get_logger(self, prefix='dfine'):
