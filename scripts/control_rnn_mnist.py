@@ -1,6 +1,5 @@
 from copy import deepcopy
-import os
-import sys
+import os, sys, math
 from pprint import pprint
 
 import numpy as np
@@ -16,7 +15,7 @@ from datasets import DFINEDataset
 from controllers import make_controller
 from closed_loop import make_closed_loop
 from script_utils import get_model, resume_training
-from plot_utils import plot_parametric, plot_vs_time, plot_eigvals, plot_high_dim, subplots_square
+from plot_utils import plot_parametric, plot_vs_time, plot_eigvals, plot_high_dim, subplots_square, plot_mat_seq
 from time_series_utils import z_score_tensor, compute_control_error, generate_input_noise, generate_interpolated_inputs
 from python_utils import convert_to_tensor, WrapperModule, identity, Timer
 
@@ -24,7 +23,7 @@ os.environ['TQDM_DISABLE'] = '1'
 np.set_printoptions(suppress=True)
 torch.set_printoptions(sci_mode=False)
 
-VERBOSE = False #global toggle for printing/plotting
+VERBOSE = True #global toggle for printing/plotting
 DEBUG = False
 
 #%% Uncomment to send this script to the cluster for execution via Slurm
@@ -96,12 +95,12 @@ if VERBOSE:
     plot_vs_time(z_seq, z_tgt_seq[:,0,:], varname='z')
 
 #%% Generate DFINE training data
-data_config = {'num_seqs': 2**18 if not DEBUG else 2**11,
+data_config = {'num_seqs': 2**14 if not DEBUG else 2**11,
                'num_steps': 50,
-               'excitation': 'data' #'noise', 'data'
-               # 'lo': 0,
-               # 'hi': 1,
-               # 'levels': 20,
+               'excitation': 'noise', #'noise', 'data'
+                'lo': 0,
+                'hi': 1,
+                'levels': 20,
                # 'include_task_input': False,
                # 'add_task_input_to_noise': False
                }
@@ -116,7 +115,7 @@ elif data_config['excitation'] == 'data':
 u_dfine = torch.empty(data_config['num_seqs'], data_config['num_steps'], rnn.dim_u)
 y_dfine = torch.empty(data_config['num_seqs'], data_config['num_steps'], rnn.dim_y)
 batch_size = 2**11
-_data_config = data_config.copy(); _data_config.pop('num_seqs')
+_data_config = data_config.copy(); _data_config.pop('num_seqs'); _data_config.pop('excitation')
 for i in range(data_config['num_seqs']//batch_size):
     print(i)
     if data_config['excitation'] == 'noise':
@@ -139,14 +138,10 @@ train_data = DFINEDataset(y=y_dfine, u=u_dfine)
 
 #%%
 if VERBOSE:
-    u_2d = u_dfine.view(u_dfine.shape[0], u_dfine.shape[1], 28, 28)
     for _ in range(10):
-        fig, axs = subplots_square(u_dfine.shape[1], rows=5)
-        for t,(u,ax) in enumerate(zip(u_2d[torch.randint(0, u_dfine.shape[0], (1,)).item()], axs.flatten())):
-            ax.imshow(u)
-            ax.set_title(f't={t}')
-        [ax.axis('off') for ax in axs.flatten()]
-        fig.tight_layout()
+        idx = torch.randint(0, u_dfine.shape[0], (1,)).item()
+        plot_mat_seq(u_dfine[idx])
+
 
 #%%
 if VERBOSE:
@@ -156,50 +151,49 @@ if VERBOSE:
 #%% Load, init, or train DFINE
 
 #Load
-# model_config = {
-#     'load_path': '/Users/dtyulman/Drive/dfine_ctrl/torchDFINE/results/train_logs/2025-04-24/16-04-36_rnn_MNIST_mnist_u=0-1-20_y=h_nx=32_ny=32_nu=784',
-#     'ckpt': 80
-#     }
-
-
-#Init with ground truth system
-# model_config = {
-#     'ground_truth': rnn
-#     }
-
-
-#Train
 model_config = {
-    'train_data': train_data,
-    'config': {
-        'model.dim_x': 32,
-        'model.dim_a': rnn.dim_y,
-        'model.dim_y': rnn.dim_y,
-        'model.dim_u': rnn.dim_u,
-        'model.hidden_layer_list': [64,64],
-        'model.activation': 'relu',
+    # train with noise
+    'load_path': '/Users/dtyulman/Drive/dfine_ctrl/torchDFINE/results/train_logs/2025-04-26/16-04-36_rnn_MNIST_mnist_u=0-1-20_y=h_nx=32_ny=32_nu=784',
+    'ckpt': 80
 
-        'train.plot_save_steps': 10,
-        'train.num_epochs': 100 if not DEBUG else 0,
-        'train.batch_size': 64,
-        'lr.scheduler': 'constantlr',
-        'lr.init': 0.001,
-        # 'lr.scheduler': 'explr'
-        # lr.explr.gamma = 0.9 # Multiplicative factor of learning rate decay
-        # lr.explr.step_size = 15 # Steps to decay the learning rate, becomes purely exponential if step is 1
-
-        'loss.scale_l2': 0.0001,
-        'optim.grad_clip': float('inf'),
-        }
+    # train from data
+    # 'load_path': '/Users/dtyulman/Drive/dfine_ctrl/torchDFINE/results/train_logs/2025-04-26/15-05-27_rnn_MNIST_nh=32_y=h__u=data_nx=32_ny=32_nu=784',
+    # 'ckpt': 100
     }
 
 
-save_str = (f"_{plant_str}"
-            f"_{dfine_data_str}"
-            f"_nx={model_config['config']['model.dim_x']}"
-            f"_ny={model_config['config']['model.dim_y']}"
-            f"_nu={model_config['config']['model.dim_u']}")
-model_config['config']['savedir_suffix'] = save_str
+#Train
+# model_config = {
+#     'train_data': train_data,
+#     'config': {
+#         'model.dim_x': 32,
+#         'model.dim_a': rnn.dim_y,
+#         'model.dim_y': rnn.dim_y,
+#         'model.dim_u': rnn.dim_u,
+#         'model.hidden_layer_list': [64,64],
+#         'model.activation': 'relu',
+
+#         'train.plot_save_steps': 10,
+#         'train.num_epochs': 100 if not DEBUG else 0,
+#         'train.batch_size': 64,
+#         'lr.scheduler': 'constantlr',
+#         'lr.init': 0.001,
+#         # 'lr.scheduler': 'explr'
+#         # lr.explr.gamma = 0.9 # Multiplicative factor of learning rate decay
+#         # lr.explr.step_size = 15 # Steps to decay the learning rate, becomes purely exponential if step is 1
+
+#         'loss.scale_l2': 0.0001,
+#         'optim.grad_clip': float('inf'),
+#         }
+#     }
+
+
+# save_str = (f"_{plant_str}"
+#             f"_{dfine_data_str}"
+#             f"_nx={model_config['config']['model.dim_x']}"
+#             f"_ny={model_config['config']['model.dim_y']}"
+#             f"_nu={model_config['config']['model.dim_u']}")
+# model_config['config']['savedir_suffix'] = save_str
 
 
 #%%
@@ -210,7 +204,7 @@ if 'load_path' in model_config:
 else:
     torch.save((rnn, rnn_train_data), os.path.join(config.model.save_dir, 'rnn.pt'))
 
-sys.exit()
+# sys.exit()
 
 #%%
 if VERBOSE:
@@ -247,11 +241,11 @@ run_config = {'num_steps': 50,
 
 control_config = {'mode': 'LQR',
                   'R':1,
-                  'Q': 1e6, #state
-                    # 'Qf': 1e8, #final state
-                    # 'horizon': run_config['num_steps']-run_config['t_on']-1,
+                  # 'Q': 1e6, #state
+                    'Qf': 1000, #final state
+                    'horizon': run_config['num_steps']-run_config['t_on']-1,
                   'penalize_obs': True, #Q ~ C^T @ C if True, else Q ~ I (same for Qf)
-                    # 'include_u_ss': False,
+                    'include_u_ss': True,
                   }
 
 # control_config = {'mode': 'MinE',
@@ -278,11 +272,38 @@ controller = make_controller(dfine, **control_config)
 # Closed loop system
 closed_loop = make_closed_loop(plant=plant, dfine=dfine, controller=controller, **closed_loop_config)
 
+#%% Define targets
+
 # Estimated target for y, and effective target for z if y_target calculated by first estimating the h_target
-num_targets = 1
-idx = torch.randint(0,len(rnn_train_data),(num_targets,))
-z_target_input = rnn_train_data[idx][0][:,0,:] #[b,z]
+z_target_input = rnn_train_data[:1000][0][:,0,:] #[b,z]
 y_target, h_target, z_target = RNN.make_y_target(rnn, z_target=z_target_input, h_target_mode='unperturbed', num_steps=rnn_train_data.num_steps)
+
+#%%
+num_seqs,num_steps = y_dfine.shape[0], y_dfine.shape[1]
+x_dfine = torch.empty(num_seqs,num_steps,trainer.dfine.dim_x)
+batch_size = 2**10
+for i in range(num_seqs//batch_size):
+    print(i)
+    x_dfine[i*batch_size:(i+1)*batch_size] = trainer.dfine(y_dfine[i*batch_size:(i+1)*batch_size],
+                                                           u_dfine[i*batch_size:(i+1)*batch_size])['x_filter']
+
+x_dfine.detach_()
+#%%
+num_targets = 1000
+b_idx = torch.randperm(x_dfine.shape[0])[:num_targets]
+t_idx = torch.randint(30, x_dfine.shape[1], (num_targets,))
+x_hat_target = x_dfine[b_idx, t_idx]
+
+#%%
+from sklearn.cluster import KMeans
+kmeans = KMeans(n_clusters=10).fit(x_dfine.view(-1, x_dfine.shape[-1]))
+x_hat_target = convert_to_tensor(kmeans.cluster_centers_)
+
+
+#%% Run control with y_target given in observation space
+closed_loop.run(y_target=y_target,
+                # plant_init='x_hat_target',
+                **run_config)
 
 
 #%% Get target in x_hat space, project onto set of valid equilibria
@@ -306,20 +327,24 @@ fig, axs = plot_high_dim(x_hat_target, d=2, label='$\\widehat{x}^*$', varname='\
 plot_high_dim(x_hat_target_proj_ctrb, axs=axs, label='$proj_{CTRB,'f'{Uc.shape[1]}''}(\\widehat{x}^*)$', marker='x', same_color=True)
 
 
-#%% Run control with y_target given in observation space
-closed_loop.run(y_target=y_target,
-                # plant_init='x_hat_target',
-                **run_config)
-pprint(RNN.compute_control_errors(closed_loop.plant, closed_loop.model))
-
-
 #%% Run control with x_hat_target given in model's latent space
-x_hat_target = x_hat_target_proj_eq1
+# x_hat_target = x_hat_target_proj_eq1
 
 closed_loop.run(x_hat_target=x_hat_target,
                 # plant_init='x_hat_target',
                 **run_config)
-pprint(RNN.compute_control_errors(closed_loop.plant, closed_loop.model))
+
+
+
+#%% Histogram of control errors
+errors = RNN.compute_control_errors(closed_loop.plant, closed_loop.model)
+pprint(errors)
+
+fig, axs = plt.subplots(1, len(errors), figsize=(14,3))
+for (key,val),ax in zip(errors.items(), axs):
+    ax.hist(val, bins=20)
+    ax.set_title(f'NMSE({key})')
+fig.tight_layout()
 
 
 #%% Plot model vars over time
@@ -343,6 +368,8 @@ fig, axs = closed_loop.model.plot_all(seq_num=seq_num, x=x_true, a=a_true, plot_
 #     axs[i,0].set_ylim(closed_loop.model.x_hat_target[seq_num,i]-pm, closed_loop.model.x_hat_target[seq_num,i]+pm)
 #     axs[i,1].set_ylim(closed_loop.model.y_hat_target[seq_num,i]-pm, closed_loop.model.y_hat_target[seq_num,i]+pm)
 
+#%% Plot sequence of inputs reshaped to MNIST size
+plot_mat_seq(closed_loop.model.u[seq_num], rows=5)
 
 #%% Visualize init, target, final x
 fig, axs = plot_high_dim(x_hat_target, d=2, label='$\\widehat{x}^*$', varname='\\widehat{x}', marker='x')

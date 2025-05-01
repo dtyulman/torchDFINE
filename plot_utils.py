@@ -1,3 +1,5 @@
+import math
+
 import torch
 import numpy as np
 import matplotlib as mpl
@@ -224,6 +226,22 @@ def plot_high_dim(x, d=2, axs=None, label=None, varname='dim', same_color=False,
 
     fig.tight_layout()
     return fig, fig.get_axes()
+
+
+@torch.no_grad()
+def plot_mat_seq(seq, rows=None, cols=None):
+    T, D = seq.shape
+    d = int(math.sqrt(D))
+
+    seq = seq.view(T, d, d)
+    fig, axs = subplots_square(T, rows=rows, cols=cols)
+    axs = axs.flatten()
+    for t in range(T):
+        axs[t].imshow(seq[t], cmap='gray')
+    [ax.axis('off') for ax in axs.flatten()]
+    fig.tight_layout()
+
+    return fig, axs
 
 
 ###########
