@@ -217,7 +217,7 @@ class NonlinearStateSpaceModel():
         """
         x0, u_seq, num_seqs, num_steps = self.init_state(x0, u_seq, num_seqs, num_steps)
         for t in range(1, num_steps):
-            self.x_seq[:,t,:] = self.next_dynamic_latent(self.x_seq[:,t-1,:], u_seq[:,t-1,:])
+            self.x_seq[:,t,:] = self.compute_next_dynamic_latent(self.x_seq[:,t-1,:], u_seq[:,t-1,:])
         self.a_seq = self.compute_manifold_latent(self.x_seq)
         self.y_seq = self.compute_observation(self.a_seq)
         return self.x_seq, self.a_seq, self.y_seq

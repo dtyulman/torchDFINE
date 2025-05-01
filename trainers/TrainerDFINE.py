@@ -106,15 +106,18 @@ class TrainerDFINE(BaseTrainer):
         metric_names = []
         for k in self.config.loss.steps_ahead:
             metric_names.append(f'steps_{k}_mse')
-
+        metric_names.append('model_loss')
         if self.config.model.supervise_behv:
             metric_names.append('behv_mse')
             metric_names.append('behv_loss')
-        metric_names.append('model_loss')
         metric_names.append('reg_loss')
         metric_names.append('control_mse')
         metric_names.append('control_loss')
         metric_names.append('spectr_reg_B_loss')
+        metric_names.append('dyn_x_loss')
+        metric_names.append('con_a_loss')
+        metric_names.append('dyn_x_mse')
+        metric_names.append('con_a_mse')
         metric_names.append('total_loss')
 
         metrics = {}
@@ -900,6 +903,10 @@ class TrainerDFINE(BaseTrainer):
             self.writer.add_scalar('scale/L2', self.dfine.scale_l2, epoch)
             self.writer.add_scalar('scale/spectr_reg_B', self.dfine.scale_spectr_reg_B, epoch)
             self.writer.add_scalar('scale/control_loss', self.dfine.scale_control_loss, epoch)
+
+            self.writer.add_scalar('scale/dyn_x_loss', self.dfine.scale_dyn_x_loss, epoch)
+            self.writer.add_scalar('scale/con_a_loss', self.dfine.scale_con_a_loss, epoch)
+
             self.writer.add_scalar('learning_rate', self.lr_scheduler.get_last_lr()[0], epoch)
             if self.config.model.supervise_behv:
                 self.writer.add_scalar('scale_behv_recons', self.dfine.scale_behv_recons, epoch)

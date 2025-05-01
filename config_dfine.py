@@ -52,12 +52,15 @@ _config.model.save_steps = 10 # Number of steps to save DFINE checkpoints
 # loss
 _config.loss = CN()
 _config.loss.steps_ahead = [1,2,3,4] # List of number of steps ahead for which DFINE is optimized. For unsupervised and supervised versions, default values are [1,2,3,4] and [1,2], respectively.
-_config.loss.scale_steps_ahead = [1.,1.,1.,1.] #relative weighting of each step ahead. Can be zero to calculate that step-ahead prediction but not include it in the final loss
+_config.loss.scale_steps_ahead = [1.,1.,1.,1.] #relative weighting of each step ahead. Can be zero to calculate that step-ahead prediction (for logging) but not include it in the final loss
 _config.loss.scale_l2 = 2e-3 # L2 regularization loss scale (we recommend a grid-search for the best value, i.e., a grid of [1e-4, 5e-4, 1e-3, 2e-3]). Please use 0 for nonlinear manifold simulations as it leads to a better performance.
 _config.loss.scale_control_loss = 0.
 _config.loss.scale_behv_recons = 20 # If _config.model.supervise_behv is True, scale for MSE of behavior reconstruction (We recommend a grid-search for the best value. It should be set to a large value).
 _config.loss.scale_spectr_reg_B = 0
 _config.loss.scale_forward_pred = 0 # Loss scale for forward prediction loss (output is predicted solely from the input)
+_config.loss.scale_dyn_x_loss = 0
+_config.loss.scale_con_a_loss = 0
+
 
 # training
 _config.train = CN()
@@ -170,6 +173,10 @@ def update_config(config, new_config, new_is_flat=False):
     flat_new_config = flatten_dict(new_config) if not new_is_flat else new_config
 
     # Update and unflatten the config to return
+    missing_keys = flat_new_config.keys() - flat_config.keys()
+    if missing_keys:
+        raise KeyError(f"Keys not present in default config: {missing_keys}")
+
     flat_config.update(flat_new_config)
     unflattened_config = CN(unflatten_dict(flat_config))
 

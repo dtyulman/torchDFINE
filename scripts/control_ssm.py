@@ -1,4 +1,4 @@
-import os
+import os, sys
 os.environ['TQDM_DISABLE'] = '1'
 
 import numpy as np
@@ -8,7 +8,8 @@ import torch
 
 import data.SSM as SSM
 from datasets import DFINEDataset
-from controllers import make_closed_loop, make_controller
+from controllers import make_controller
+from closed_loop import make_closed_loop
 from script_utils import get_model
 from plot_utils import plot_parametric, plot_vs_time
 from time_series_utils import z_score_tensor
@@ -16,10 +17,16 @@ from python_utils import convert_to_tensor, approx_indexof
 
 np.set_printoptions(suppress=True)
 torch.set_printoptions(sci_mode=False)
-VERBOSE = True #global toggle for printing/plotting
+MAKE_PLOTS = False #global toggle for printing/plotting
+
+
+#%% Uncomment to send this script to the cluster for execution via Slurm
+# from run_on_remote import run_me_on_remote
+# run_me_on_remote(time='1:00:00', cpus=2, mem=16); MAKE_PLOTS=False #never plot on remote
+
 
 #%% Make a ground-truth SSM
-ssm_config = {'manifold': 'linear',
+ssm_config = {'manifold': 'swiss',
               'dim_a': 2,
               'dim_y': 3,
               'A': torch.tensor([[.95,   0.05],
@@ -29,9 +36,9 @@ ssm_config = {'manifold': 'linear',
 manifold = ssm_config.pop('manifold')
 ssm = SSM.make_ssm(manifold, **ssm_config)
 
-if VERBOSE:
-    print(ssm)
-    print('eigvals:', [e.real.item() if e.imag==0 else e for e in torch.linalg.eigvals(ssm.A)])
+
+print(ssm)
+print('eigvals:', [e.real.item() if e.imag==0 else e for e in torch.linalg.eigvals(ssm.A)])
 
 
 #%% Generate DFINE training data
@@ -45,7 +52,7 @@ x_train, a_train, y_train, u_train = SSM.generate_dataset(ssm, **data_config)
 train_data = DFINEDataset(y_train, u_train)
 
 #%%
-if VERBOSE:
+if MAKE_PLOTS:
     SSM.plot_data_sample(x=x_train, a=a_train, y=y_train, f=ssm.f, num_seqs=10)
 
 #%% Load, init, or train DFINE
@@ -64,12 +71,10 @@ if VERBOSE:
 
 
 #Train
-save_str = f"_{manifold}_u={data_config['lo']}-{data_config['hi']}-{data_config['levels']}"
 
 model_config = {
     'train_data': train_data,
     'config': {
-        'savedir_suffix': save_str,
         'model.dim_x': ssm.dim_x,
         'model.dim_a': ssm.dim_a,
         'model.dim_y': ssm.dim_y,
@@ -77,19 +82,44 @@ model_config = {
         'model.hidden_layer_list': [20,20,20,20],
         'model.activation': 'relu',
 
-        'train.num_epochs': 20,
+        'train.num_epochs': 100,
         'train.batch_size': 64,
         'lr.scheduler': 'constantlr',
         'loss.scale_l2': 0,
+
+        'loss.steps_ahead': [0,1,2,3,4],
+        'loss.scale_steps_ahead': [1.,1.,1.,1.,1.],
+
+        'loss.scale_dyn_x_loss': 0.,
+        'loss.scale_con_a_loss': 0.,
+
         'optim.grad_clip': float('inf'),
         }
     }
 
+save_str = f"_{manifold}_u={data_config['lo']}-{data_config['hi']}-{data_config['levels']}"
+
+cfg = model_config['config']
+for k in ('dyn_x', 'con_a'):
+    key = f'loss.scale_{k}_loss'
+    if (v := cfg[key]) > 0:
+        save_str += f"_L{k.replace('_','')}={v}"
+        break
+
+if 0 in cfg['loss.steps_ahead']:
+    i = cfg['loss.steps_ahead'].index(0)
+    if (v := cfg['loss.scale_steps_ahead'][i]) > 0:
+        save_str += f"_Lk0={v}"
+
+model_config['config']['savedir_suffix'] = save_str
+
+print(save_str)
+
 
 config, trainer = get_model(**model_config)
-if VERBOSE:
-    print(trainer.dfine)
+print(trainer.dfine)
 
+sys.exit()
 #%% Run control
 closed_loop_config = {'ground_truth': '',
                       'suppress_plant_noise': True,
@@ -101,8 +131,8 @@ run_config = {'num_steps': 100,
 
 control_config = {'R': 1, #control
                   'Q': 0, #state
-                  'F': 1e10, #final state
-                  'T': run_config['num_steps']-1 #TODO: why -1 ??
+                  'Qf': 1e5, #final state
+                  'horizon': run_config['num_steps']-1 #TODO: why -1 ??
                   }
 
 controller = make_controller(trainer.dfine, **control_config)

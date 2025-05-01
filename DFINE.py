@@ -122,6 +122,8 @@ class DFINE(nn.Module):
         self.scale_l2 = self.config.loss.scale_l2
         self.scale_control_loss = self.config.loss.scale_control_loss
         self.scale_spectr_reg_B = self.config.loss.scale_spectr_reg_B
+        self.scale_dyn_x_loss = self.config.loss.scale_dyn_x_loss
+        self.scale_con_a_loss = self.config.loss.scale_con_a_loss
 
         assert len(self.config.loss.steps_ahead) == len(self.config.loss.scale_steps_ahead)
 
@@ -307,7 +309,7 @@ class DFINE(nn.Module):
         '''
 
         # Check whether provided k value is valid or not
-        assert k>0 and isinstance(k, int), 'Number of steps ahead prediction value is invalid or of wrong type, k must be a positive integer!'
+        assert k>=0 and isinstance(k, int), 'Number of steps ahead prediction value is invalid or of wrong type, k must be a nonnegative integer!'
 
         # Extract the required variables from model_vars dictionary
         x_filter = model_vars['x_filter'] #[b,t,x]
@@ -315,56 +317,70 @@ class DFINE(nn.Module):
         # Get the required dimensions
         num_seq, num_steps, _ = x_filter.shape
 
+
         # Here is where k-step ahead prediction is iteratively performed
-        x_pred_k = x_filter[:, :-k, ...] #[x_{0|0}, x_{1|1}, ..., x_{(T-k)|(T-k)}], will contain [x_{k|0}, x_{(k+1)|1}, ..., x_{T|(T-k)}]
+        if k == 0:
+            x_pred_k = x_filter
+        else:
+            x_pred_k = x_filter[:, :-k, ...] #[x_{0|0}, x_{1|1}, ..., x_{(T-k)|(T-k)}], will contain [x_{k|0}, x_{(k+1)|1}, ..., x_{T|(T-k)}]
+
         for i in range(0, k):
             s = slice(i, num_steps-k+i)
             x_pred_k = (self.ldm.A @ x_pred_k.unsqueeze(dim=-1) + self.ldm.B @ u[:,s].unsqueeze(dim=-1)).squeeze(dim=-1)
+            """ x_pred_k contents:
+            start: [x_{0|0},   x_{1|1},   ..., x_{(T-k)    |(T-k)}]
 
-            # start: [x_{0|0},   x_{1|1},   ..., x_{(T-k)    |(T-k)}]
+            i=0:   [x_{1|0},   x_{2|1},   ..., x_{(T-k+1)  |(T-k)}]
 
-            # i=0:   [x_{1|0},   x_{2|1},   ..., x_{(T-k+1)  |(T-k)}]
-            #
-            #     = [ x_{1|0} = A x_{0|0} + B u_{0},
-            #         x_{2|1} = A x_{1|1} + B u_{1},
-            #         ...
-            #         x_{T-k+1|T-k} = A x_{T-k|T-k} + B u_{T-k} ]
-
-
-            # i=1:  [x_{2|0},   x_{3|1},   ...,   x_{T-k+2|T-k}]
-            #
-            #     = [ x_{2|0} = A x_{1|0} + B u_{1},
-            #         x_{3|1} = A x_{2|1} + B u_{2},
-            #         ...
-            #         x_{T-k+2|T-k} = A x_{T-k+1|T-k} + B u_{T-k+1} ]
+                = [ x_{1|0} = A x_{0|0} + B u_{0},
+                    x_{2|1} = A x_{1|1} + B u_{1},
+                    ...
+                    x_{T-k+1|T-k} = A x_{T-k|T-k} + B u_{T-k} ]
 
 
-            # i:    [x_{i+1|0}, x_{i+2  |1}, ...,   x_{(T-k+i+1)|(T-k)}]
-            #
-            #     = [ x_{i+1|0} = A x_{i|0} + B u_{i},
-            #         x_{i+2|1} = A x_{i+1|1} + B u_{i+1},
-            #         ...
-            #         x_{T-k+i+1|T-k} = A x_{T-k+i|T-k} + B u_{T-k+i} ]
+            i=1:  [x_{2|0},   x_{3|1},   ...,   x_{T-k+2|T-k}]
+
+                = [ x_{2|0} = A x_{1|0} + B u_{1},
+                    x_{3|1} = A x_{2|1} + B u_{2},
+                    ...
+                    x_{T-k+2|T-k} = A x_{T-k+1|T-k} + B u_{T-k+1} ]
 
 
-            # i=k-1:   [x_{k|0}, x_{(k+1)|1}, ...,   x_{T|(T-k)}]
-            #
-            #     = [ x_{k|0} = A x_{k-1|0} + B u_{k-1},
-            #         x_{k+1|1} = A x_{k|1} + B u_{k},
-            #         ...
-            #         x_{T|T-k} = A x_{T-1|T-k} + B u_{T-1} ]
+            ...
 
+
+            i:    [x_{i+1|0}, x_{i+2  |1}, ...,   x_{(T-k+i+1)|(T-k)}]
+
+                = [ x_{i+1|0} = A x_{i|0} + B u_{i},
+                    x_{i+2|1} = A x_{i+1|1} + B u_{i+1},
+                    ...
+                    x_{T-k+i+1|T-k} = A x_{T-k+i|T-k} + B u_{T-k+i} ]
+
+
+            ...
+
+
+            i=k-1:   [x_{k|0}, x_{(k+1)|1}, ...,   x_{T|(T-k)}]
+
+                = [ x_{k|0} = A x_{k-1|0} + B u_{k-1},
+                    x_{k+1|1} = A x_{k|1} + B u_{k},
+                    ...
+                    x_{T|T-k} = A x_{T-1|T-k} + B u_{T-1} ]
+            """
 
         a_pred_k = (self.ldm.C @ x_pred_k.unsqueeze(dim=-1)).squeeze(dim=-1)
         if self.config.model.fit_D_matrix:
             a_pred_k = a_pred_k + (self.ldm.D @ u[:,k:,...].unsqueeze(dim=-1)).squeeze(dim=-1)
 
         # After obtaining k-step ahead predicted manifold latent factors, they're decoded to obtain k-step ahead predicted neural observations
-        decoder = model_vars['decoder'] if 'decoder' in model_vars else self.decoder
-        y_pred_k = decoder(a_pred_k)
+        y_pred_k = self.decoder(a_pred_k)
 
         #sanity check
-        if k == 1:
+        if k == 0:
+            assert (y_pred_k == model_vars['y_filter']).all()
+            assert (x_pred_k == model_vars['x_filter']).all()
+            assert (a_pred_k == model_vars['a_filter']).all()
+        elif k == 1:
             assert (y_pred_k == model_vars['y_pred']).all()
             assert (x_pred_k == model_vars['x_pred']).all()
             assert (a_pred_k == model_vars['a_pred']).all()
@@ -451,6 +467,22 @@ class DFINE(nn.Module):
             loss_dict['spectr_reg_B_loss'] = spectr_reg_B_loss
 
 
+        # # Dynamics consistency loss
+        dyn_x_loss = torch.tensor(0.)
+        dyn_x_mse = F.mse_loss(model_vars['x_pred'], model_vars['x_filter'][:,1:])
+        if self.scale_dyn_x_loss > 0:
+            dyn_x_loss = self.scale_dyn_x_loss * dyn_x_mse
+        loss_dict['dyn_x_mse'] = dyn_x_mse
+        loss_dict['dyn_x_loss'] = dyn_x_loss
+
+
+        # # Manifold latent inference/encoding consistency loss
+        con_a_mse = F.mse_loss(model_vars['a_hat'], model_vars['a_filter'])
+        con_a_loss = self.scale_con_a_loss * con_a_mse
+        loss_dict['con_a_mse'] = con_a_mse
+        loss_dict['con_a_loss'] = con_a_loss
+
+
         # Control loss
         control_loss = torch.tensor(0.)
         if y_target_cl is not None:
@@ -471,6 +503,6 @@ class DFINE(nn.Module):
             loss_dict['control_loss'] = control_loss
 
         # Final loss
-        loss = model_loss + behv_loss + reg_loss + spectr_reg_B_loss + control_loss
+        loss = model_loss + behv_loss + reg_loss + spectr_reg_B_loss + control_loss + dyn_x_loss + con_a_loss
         loss_dict['total_loss'] = loss
         return loss, loss_dict, y_pred_all
