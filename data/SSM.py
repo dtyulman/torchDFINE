@@ -65,23 +65,30 @@ class NonlinearStateSpaceModel():
         self.x = self.a = self.y = self.t = None
 
 
+    @staticmethod
+    def _format_repr(name, tensor):
+        arr = tensor.numpy() if isinstance(tensor, torch.Tensor) else tensor
+        s = np.array2string(arr, max_line_width=np.inf)
+        return f'{name}={s.replace("\n", "\n" + " " * (len(name) + 1))}\n'
+
+
     def __repr__(self):
+        Q = self.Q_distr.covariance_matrix if self.Q_distr is not None else 0
+        R = self.R_distr.covariance_matrix if self.R_distr is not None else 0
+        S = self.S_distr.covariance_matrix if self.S_distr is not None else 0
+
         return (
-            f'A={self.A.numpy()}\n'
-            f'b={self.b.numpy()}\n'
-            f'B={self.B.numpy()}\n'
-            f'Q={self.Q_distr.covariance_matrix.numpy() if self.Q_distr is not None else 0}\n'
-
-            '--\n'
-
-            f'C={self.C.numpy()}\n'
-            f'R={self.R_distr.covariance_matrix.numpy() if self.R_distr is not None else 0}\n'
-
-            '--\n'
-
-            f'f={self.f}\n'
-            f'S={self.S_distr.covariance_matrix.numpy() if self.S_distr is not None else 0}\n'
-            )
+            self._format_repr('A', self.A) +
+            self._format_repr('b', self.b) +
+            self._format_repr('B', self.B) +
+            self._format_repr('Q', Q) +
+            '--\n' +
+            self._format_repr('C', self.C) +
+            self._format_repr('R', R) +
+            '--\n' +
+            f'f={self.f}\n' +
+            self._format_repr('S', S)
+        )
 
 
     def is_observable(self, verbose=False, method='direct'):
@@ -248,7 +255,7 @@ class NonlinearEmbeddingBase():
 
     def __repr__(self):
         return (f'{self.__class__.__name__}\n'
-                f'T={self.projection_matrix.numpy()}\n')
+                f'T={self.projection_matrix.numpy()}')
 
 
     def __call__(self, a):
@@ -330,11 +337,18 @@ class SwissRoll(NonlinearEmbeddingBase):
         return e
 
 
-    # def nonlin_embed_inv(self, e):
-    #     h = e[..., 1]
-    #     r =
-    #     return torch.stack([r,
-    #                         h])
+    def nonlin_embed_inv(self, e):
+        """input: [b,t,3] or [t,3] or [3]
+        returns: [b,t,2] or [t,2] or [2]
+
+        Assumes the mapping r -> (r cos r, r sin r) is injective over the domain of r,
+        e.g., r ∈ [0, pi], to ensure a well-defined inverse
+        """
+        h = e[..., 1]
+        r = 2 * torch.sqrt(e[..., 0]**2 + e[..., 2]**2)
+        return torch.stack([r,
+                            h], dim=-1)
+
 
     def plot_manifold(self, rlim=None, hlim=None, r_samples=300, h_samples=30, ax=None):
         rlim = rlim or self.default_input_lims[0]

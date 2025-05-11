@@ -105,22 +105,21 @@ class TrainerDFINE(BaseTrainer):
                 log_str += f"{k}_steps_mse: {self.metrics[train_valid][f'steps_{k}_mse'].compute():.5f}\n"
 
         # Logging L2 regularization loss and L2 scale
-        log_str += f"reg_loss: {self.metrics[train_valid]['reg_loss'].compute():.5f}, scale_l2: {self.dfine.scale_l2:.5f}\n"
+        if self.dfine.scale_l2 > 0:
+            log_str += f"reg_loss: {self.metrics[train_valid]['reg_loss'].compute():.5f}, scale_l2: {self.dfine.scale_l2:.5f}\n"
 
         if self.dfine.scale_spectr_reg_B > 0:
             log_str += f"spectr_reg_B_loss: {self.metrics[train_valid]['spectr_reg_B_loss'].compute():.5f}, scale_spectr_reg_B: {self.dfine.scale_spectr_reg_B:.5f}\n"
 
-
         if self.dfine.scale_control_loss > 0:
             log_str += f"control_mse: {self.metrics[train_valid]['control_mse'].compute():.5f}, scale_control_loss: {self.dfine.scale_control_loss:.5f}\n"
-
 
         # If model is behavior-supervised, log behavior reconstruction loss
         if self.config.model.supervise_behv:
             log_str += f"behv_loss: {self.metrics[train_valid]['behv_loss'].compute():.5f}, scale_behv_recons: {self.dfine.scale_behv_recons:.5f}\n"
 
-        # Finally, log model_loss and total_loss to optimize
-        log_str += f"model_loss: {self.metrics[train_valid]['model_loss'].compute():.5f}, total_loss: {self.metrics[train_valid]['total_loss'].compute():.5f}\n"
+        # log avg_k_steps_mse and total_loss to optimize
+        log_str += f"avg_k_steps_mse: {self.metrics[train_valid]['avg_k_steps_mse'].compute():.5f}, total_loss: {self.metrics[train_valid]['total_loss'].compute():.5f}\n"
         return log_str
 
 
@@ -289,8 +288,8 @@ class TrainerDFINE(BaseTrainer):
             self.write_summary(epoch, prefix='valid')
 
             # Save the best validation loss model (and best behavior reconstruction loss model if supervised)
-            if self.metrics['valid']['model_loss'].compute() < self.best_val_loss:
-                self.best_val_loss = self.metrics['valid']['model_loss'].compute()
+            if self.metrics['valid']['avg_k_steps_mse'].compute() < self.best_val_loss:
+                self.best_val_loss = self.metrics['valid']['avg_k_steps_mse'].compute()
                 self._save_ckpt(epoch='best_loss',
                                 model=self.dfine,
                                 optimizer=self.optimizer,

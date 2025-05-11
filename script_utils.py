@@ -1,4 +1,5 @@
 import os
+import traceback
 
 from torch.utils.data import DataLoader
 
@@ -59,7 +60,8 @@ def get_model(config=None, train_data=None, load_path=None, ckpt=None, ground_tr
             train_loader = DataLoader(train_data, batch_size=config.train.batch_size, shuffle=True)
             try:
                 trainer.train(train_loader)
-            except KeyboardInterrupt: #return model in its current state if interrupt training
+            except BaseException: #return model in its current state if interrupt training
+                traceback.print_exc()
                 return config, trainer
 
     return config, trainer

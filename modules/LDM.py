@@ -71,14 +71,15 @@ class LDM(nn.Module):
 
     def __repr__(self):
         W, R = self._get_covariance_matrices()
-        return (
-            f'\nA={self.A.numpy()}\n'
-            f'B={self.B.numpy()}\n'
-            f'W={W.numpy()}\n'
-            '--\n'
-            f'C={self.C.numpy()}\n'
-            f'R={R.numpy()}\n'
-            )
+        r = (f'A={self.A.detach().numpy()}\n'
+             f'B={self.B.detach().numpy()}\n'
+             f'W={W.detach().numpy()}\n'
+             '--\n'
+
+             f'C={self.C.detach().numpy()}\n'
+             f'D={self.D.detach().numpy() if self.fit_D_matrix else None}\n'
+             f'R={R.detach().numpy()}')
+        return r
 
 
     def _register_params(self):
@@ -145,19 +146,6 @@ class LDM(nn.Module):
         W = torch.diag(torch.exp(self.W_log_diag))
         R = torch.diag(torch.exp(self.R_log_diag))
         return W, R
-
-
-    def __repr__(self):
-        W, R = self._get_covariance_matrices()
-        r = (f'A={self.A.detach().numpy()}\n'
-             f'B={self.B.detach().numpy()}\n'
-             f'W={W.detach().numpy()}\n'
-             '--\n'
-
-             f'C={self.C.detach().numpy()}\n'
-             f'D={self.D.detach().numpy() if self.fit_D_matrix else None}\n'
-             f'R={R.detach().numpy()}')
-        return r
 
 
     def compute_forwards(self, a, u, mask=None):

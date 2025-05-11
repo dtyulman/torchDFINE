@@ -29,8 +29,10 @@ MAKE_PLOTS = False #global toggle for printing/plotting
 ssm_config = {'manifold': 'swiss',
               'dim_a': 2,
               'dim_y': 3,
-              'A': torch.tensor([[.95,   0.05],
-                                 [.05,   0.9]])
+              # 'A': torch.tensor([[.95,   0.05],
+              #                    [.05,   0.9]])
+              'A': torch.tensor([[1,   0.05],
+                                 [0,   0.98]])
               }
 
 manifold = ssm_config.pop('manifold')
@@ -42,12 +44,13 @@ print('eigvals:', [e.real.item() if e.imag==0 else e for e in torch.linalg.eigva
 
 
 #%% Generate DFINE training data
-data_config = {'num_seqs': 2**15,
-               'num_steps': 50,
+data_config = {'num_seqs': 2**16,
+               'num_steps': 200,
                'lo': -0.5,
                'hi': 0.5,
                'levels': 2}
 
+torch.manual_seed(123)
 x_train, a_train, y_train, u_train = SSM.generate_dataset(ssm, **data_config)
 train_data = DFINEDataset(y_train, u_train)
 
@@ -59,19 +62,18 @@ if MAKE_PLOTS:
 
 #Load
 # model_config = {
-#     'load_path': None,
-#     'ckpt': None
+#     'load_path': "/Users/dtyulman/Drive/dfine_ctrl/torchDFINE/results/train_logs/2025-05-01/21-38-37_swiss_u=-0.5-0.5-2",
+#     'ckpt': 50
 #     }
 
 
 #Init with ground truth system
 # model_config = {
-#     'ground_truth': None
+#     'ground_truth': ssm
 #     }
 
 
 #Train
-
 model_config = {
     'train_data': train_data,
     'config': {
@@ -80,18 +82,19 @@ model_config = {
         'model.dim_y': ssm.dim_y,
         'model.dim_u': ssm.dim_u,
         'model.hidden_layer_list': [20,20,20,20],
-        'model.activation': 'relu',
+        # 'model.activation': 'relu',
 
+        'train.plot_save_steps': 10,
         'train.num_epochs': 100,
-        'train.batch_size': 64,
+        'train.batch_size': 32,
         'lr.scheduler': 'constantlr',
         'loss.scale_l2': 0,
 
-        'loss.steps_ahead': [0,1,2,3,4],
-        'loss.scale_steps_ahead': [1.,1.,1.,1.,1.],
+        'loss.steps_ahead': [1,2,3,4],
+        'loss.scale_steps_ahead': [1.,1.,1.,1.],
 
-        'loss.scale_dyn_x_loss': 0.,
-        'loss.scale_con_a_loss': 0.,
+        # 'loss.scale_dyn_x_loss': 0.,
+        # 'loss.scale_con_a_loss': 1000.,
 
         'optim.grad_clip': float('inf'),
         }
@@ -101,10 +104,11 @@ save_str = f"_{manifold}_u={data_config['lo']}-{data_config['hi']}-{data_config[
 
 cfg = model_config['config']
 for k in ('dyn_x', 'con_a'):
-    key = f'loss.scale_{k}_loss'
-    if (v := cfg[key]) > 0:
-        save_str += f"_L{k.replace('_','')}={v}"
-        break
+    if k in cfg:
+        key = f'loss.scale_{k}_loss'
+        if (v := cfg[key]) > 0:
+            save_str += f"_L{k.replace('_','')}={v}"
+            break
 
 if 0 in cfg['loss.steps_ahead']:
     i = cfg['loss.steps_ahead'].index(0)
@@ -115,7 +119,7 @@ model_config['config']['savedir_suffix'] = save_str
 
 print(save_str)
 
-
+#%%
 config, trainer = get_model(**model_config)
 print(trainer.dfine)
 
@@ -131,8 +135,10 @@ run_config = {'num_steps': 100,
 
 control_config = {'R': 1, #control
                   'Q': 0, #state
-                  'Qf': 1e5, #final state
-                  'horizon': run_config['num_steps']-1 #TODO: why -1 ??
+                  'Qf': 10, #final state
+                  'horizon': run_config['num_steps']-1, #TODO: why -1 ??
+                  # 'penalize_obs' : False,
+                  # 'include_u_ss' : False
                   }
 
 controller = make_controller(trainer.dfine, **control_config)
@@ -142,10 +148,9 @@ closed_loop = make_closed_loop(plant=ssm,
                                **closed_loop_config)
 
 
-x_target = None
-
+x_target = None #default
 # x_target = [3.5, 3.5]
-# x_target = [(0, 6*torch.pi, 41), (-10, 10, 41)]
+# x_target = [(-4, 4, 21), (-4, 4, 21)]
 
 x_target, a_target, y_target = SSM.make_target(ssm, x_target)
 closed_loop.run(y_target=y_target, **run_config)

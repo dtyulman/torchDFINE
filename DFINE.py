@@ -406,12 +406,7 @@ class DFINE(nn.Module):
         ------------
         - loss: torch.Tensor, shape: (), Loss to optimize, which is sum of k-step-ahead MSE loss, L2 regularization loss and
                                          behavior reconstruction loss if model is supervised
-        - loss_dict: dict, Dictionary which has all loss components to log on Tensorboard. Keys are (e.g. for config.loss.steps_ahead = [1, 2]):
-            - steps_{k}_mse: torch.Tensor, shape: (), {k}-step ahead predicted masked MSE, k's are determined by config.loss.steps_ahead
-            - model_loss: torch.Tensor, shape: (), Negative of sum of all steps_{k}_mse
-            - behv_loss: torch.Tensor, shape: (), Behavior reconstruction loss, 0 if model is unsupervised
-            - reg_loss: torch.Tensor, shape: (), L2 Regularization loss for DFINE encoder and decoder weights
-            - total_loss: torch.Tensor, shape: (), Sum of model_loss, behv_loss and reg_loss
+        - loss_dict: dict, Dictionary which has all loss components to log on Tensorboard
         '''
 
         # Create the mask if it's None
@@ -422,69 +417,72 @@ class DFINE(nn.Module):
         loss_dict = dict()
 
         # Iterate over multiple steps ahead
-        k_steps_mse_sum = torch.tensor(0.)
+        avg_k_steps_mse = torch.tensor(0.)
         y_pred_all = {}
+        #TODO this can be made k times faster by reusing previous k's computation
         for k, scale_k in zip(self.config.loss.steps_ahead, self.config.loss.scale_steps_ahead):
-            #TODO this can be made k times faster by reusing previous k's computation
+            #TODO: if I don't detach u (in closed loop fitting), how will this affect this k-step-ahead computation graph?
             y_pred_k, _, _ = self.get_k_step_ahead_prediction(model_vars, k=k, u=u.detach())
-            #TODO: if I don't detach u, how will this affect this k-step-ahead computation graph?
-
             y_pred_all[k] = y_pred_k
-            mse_pred = compute_mse(y_flat=y[:, k:, :].reshape(-1, self.dim_y),
-                                    y_hat_flat=y_pred_k.reshape(-1, self.dim_y),
-                                    mask_flat=mask[:, k:, :].reshape(-1,))
-            k_steps_mse_sum += scale_k * mse_pred
-            loss_dict[f'steps_{k}_mse'] = mse_pred
+            k_steps_mse = compute_mse(y_flat=y[:, k:, :].reshape(-1, self.dim_y),
+                                      y_hat_flat=y_pred_k.reshape(-1, self.dim_y),
+                                      mask_flat=mask[:, k:, :].reshape(-1,))
+            loss_dict[f'steps_{k}_mse'] = k_steps_mse
 
-        model_loss = k_steps_mse_sum
-        loss_dict['model_loss'] = model_loss
+            avg_k_steps_mse += scale_k * k_steps_mse
+
+
+        avg_k_steps_mse = avg_k_steps_mse / sum(self.config.loss.scale_steps_ahead)
+        loss_dict['avg_k_steps_mse'] = avg_k_steps_mse
 
 
         # Get MSE loss for behavior reconstruction, 0 if we dont supervise our model with behavior data
-        behv_mse = torch.tensor(0.)
-        behv_loss = torch.tensor(0.)
+        behv_mse = 0
+        behv_loss = 0
         if self.config.model.supervise_behv:
             behv_mse = compute_mse(y_flat=behv[..., self.config.model.which_behv_dims].reshape(-1, self.dim_behv),
                                    y_hat_flat=model_vars['behv_hat'].reshape(-1, self.dim_behv),
                                    mask_flat=mask.reshape(-1,))
             behv_loss = self.scale_behv_recons * behv_mse
-        loss_dict['behv_mse'] = behv_mse
-        loss_dict['behv_loss'] = behv_loss
+            loss_dict['behv_mse'] = behv_mse
+            loss_dict['behv_loss'] = behv_loss
 
 
         # L2 regularization loss
-        reg_loss = torch.tensor(0.)
+        reg_loss = 0
         if self.scale_l2 > 0:
             self.scale_l2 * sum([torch.norm(param) for name, param in self.named_parameters() if 'weight' in name])
             loss_dict['reg_loss'] = reg_loss
 
 
         # B matrix inverse spectral norm regularization loss
-        spectr_reg_B_loss = torch.tensor(0.)
+        spectr_reg_B_loss = 0
         if self.scale_spectr_reg_B > 0:
             # spectr_reg_B_loss = self.scale_spectr_reg_B / torch.linalg.svd(self.ldm.B)[1].min()
             spectr_reg_B_loss = self.scale_spectr_reg_B * (torch.linalg.cond(self.ldm.B) - 1)
             loss_dict['spectr_reg_B_loss'] = spectr_reg_B_loss
 
 
-        # # Dynamics consistency loss
-        dyn_x_loss = torch.tensor(0.)
+        # Dynamics consistency loss
         dyn_x_mse = F.mse_loss(model_vars['x_pred'], model_vars['x_filter'][:,1:])
+        loss_dict['dyn_x_mse'] = dyn_x_mse
+        dyn_x_loss = 0
         if self.scale_dyn_x_loss > 0:
             dyn_x_loss = self.scale_dyn_x_loss * dyn_x_mse
-        loss_dict['dyn_x_mse'] = dyn_x_mse
-        loss_dict['dyn_x_loss'] = dyn_x_loss
+            loss_dict['dyn_x_loss'] = dyn_x_loss
 
 
-        # # Manifold latent inference/encoding consistency loss
+        # Manifold latent inference/encoding consistency loss
         con_a_mse = F.mse_loss(model_vars['a_hat'], model_vars['a_filter'])
-        con_a_loss = self.scale_con_a_loss * con_a_mse
         loss_dict['con_a_mse'] = con_a_mse
-        loss_dict['con_a_loss'] = con_a_loss
+        con_a_loss = 0
+        if self.scale_con_a_loss > 0:
+            con_a_loss = self.scale_con_a_loss * con_a_mse
+            loss_dict['con_a_loss'] = con_a_loss
 
 
         # Control loss
-        control_loss = torch.tensor(0.)
+        control_loss = 0
         if y_target_cl is not None:
             #TODO: should I use y_hat from closed-loop, or from open-loop in model_vars?
             # are they identical? --> maybe... torch.allclose==True
@@ -498,11 +496,12 @@ class DFINE(nn.Module):
             y_hat_T = y_hat_cl[:,-1,:] #model_vars['y_filter'][:,-1,:]  #[b,y]
 
             control_mse = F.mse_loss(y_hat_T, y_target_cl)
-            control_loss = self.scale_control_loss * control_mse
             loss_dict['control_mse'] = control_mse
-            loss_dict['control_loss'] = control_loss
+            if self.scale_control_loss > 0:
+                control_loss = self.scale_control_loss * control_mse
+                loss_dict['control_loss'] = control_loss
 
         # Final loss
-        loss = model_loss + behv_loss + reg_loss + spectr_reg_B_loss + control_loss + dyn_x_loss + con_a_loss
+        loss = avg_k_steps_mse + behv_loss + reg_loss + spectr_reg_B_loss + control_loss + dyn_x_loss + con_a_loss
         loss_dict['total_loss'] = loss
         return loss, loss_dict, y_pred_all
