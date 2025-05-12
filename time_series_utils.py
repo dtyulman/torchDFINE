@@ -11,14 +11,16 @@ from scipy.stats import pearsonr
 from nn import compute_mse
 
 
-def compute_control_error(output, target, t=-1):
+def compute_control_error(output, target, t=-1, normalize='init'):
     """
     Inputs:
         output: [b,t,v]
         target: [b,v]
         t: tuple (start_idx, end_idx) or idx or None. Average over these time indices before computing error
     Returns
-        normalized_err: [b]. Error for each item in the batch, normalized by the distance from initialization to target
+        err: [b]. Error for each item in the batch, normalized by:
+            - the distance from initialization to target if normalize == 'init'
+            - not normalized otherwise
     """
     init_err = (output[:,0,:] - target).norm(dim=-1) #([b,v]-[b,v]) -> [b]
 
@@ -33,8 +35,9 @@ def compute_control_error(output, target, t=-1):
     avg_output = output.mean(dim=1) #[b,t,v] -> [b,v]
     err = (avg_output - target).norm(dim=-1) #([b,v]-[b,v]) -> [b]
 
-    normalized_err = err / init_err
-    return normalized_err #[b]
+    if normalize == 'init':
+        err = err / init_err
+    return err #[b]
 
 
 

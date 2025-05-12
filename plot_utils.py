@@ -152,15 +152,15 @@ def plot_parametric(seq, t_on=None, t_off=None, mode='line', size=None, cbar=Tru
 
 
 @torch.no_grad()
-def plot_heatmap(M, h_axis, v_axis, vmin=0, vmax=1, cmap='Reds'):
+def plot_heatmap(M, h_axis, v_axis, vmin=None, vmax=None, cmap='Reds', ax=None):
     #fix cmap
     cmap = mpl.colormaps[cmap]
     cmap.set_over('grey')
 
     #plot
-    fig, ax = plt.subplots()
+    fig, ax = _prep_axes(ax)
     pcm = ax.pcolormesh(h_axis, v_axis, M.T, vmin=vmin, vmax=vmax, cmap=cmap)
-    ax.axis('equal')
+    ax.axis('square')
     plt.colorbar(pcm, ax=ax, extend='max' if vmax is not None else None)
 
     return fig, ax
@@ -253,7 +253,7 @@ def _prep_axes(ax=None, nrows=1, ncols=1, **kwargs):
 
     else:
         # unsqueeze ax into an array
-        if not kwargs['squeeze']:
+        if 'squeeze' in kwargs and not kwargs['squeeze']:
             ax = np.atleast_2d(ax)
 
         # sanity check if specifying nrows or ncols

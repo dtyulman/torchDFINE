@@ -325,7 +325,7 @@ class RingManifold(NonlinearEmbeddingBase):
 class SwissRoll(NonlinearEmbeddingBase):
     input_dim = 2
     nonlin_dim = 3
-    default_input_lims = [(0, 3*torch.pi), ((-5, 5))]
+    default_input_lims = [(0, 3*torch.pi), (-5, 5)] #[(rmin, rmax), (hmin, hmax)]
 
     def nonlin_embed(self, a):
         """input: [b,t,2] or [t,2] or [2]
@@ -368,7 +368,7 @@ class SwissRoll(NonlinearEmbeddingBase):
 class Torus(NonlinearEmbeddingBase):
     input_dim = 2
     nonlin_dim = 3
-    default_input_lims = [(0, 2*torch.pi), ((0, 2*torch.pi))]
+    default_input_lims = [(0, 2*torch.pi), (0, 2*torch.pi)] #[(r1min, r1max), (r2min, r2max)]
 
     def __init__(self, r1=4, r2=1.5, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -743,27 +743,30 @@ def make_target(ssm, x=None, endpoint=True):
     elif isinstance(x, (list, tuple)) and isinstance(x[0], (int, float)):
         x = torch.tensor(x, dtype=torch.get_default_dtype()).unsqueeze(0) #[1,x]
 
-    a = ssm.compute_manifold_latent(x)
-    y = ssm.compute_observation(a)
+    a = ssm.compute_manifold_latent(x, noise=False)
+    y = ssm.compute_observation(a, noise=False)
     return x, a, y
 
 
-def plot_error_heatmap(output, target, x_target, t=-1, varname=''):
+def plot_error_heatmap(output, target, x_target, t=-1, varname='', normalize='init', ax=None):
     """
     output: [b,t,v]
     target: [b,v]
     x_target: [b,t,v]. Used to compute ax ticks
     """
-    error = compute_control_error(output, target, t=t)
+    error = compute_control_error(output, target, t=t, normalize=normalize)
 
     h_axis = x_target[:,0].unique()
     v_axis = x_target[:,1].unique()
     error = error.reshape(len(h_axis), len(v_axis))
 
-    fig, ax = plot_heatmap(error, h_axis, v_axis)
-    ax.set_title(f'Error ${varname}$')
+    vmin = vmax = None
+    if normalize == 'init':
+        vmin, vmax = 0, 1
+
+    fig, ax = plot_heatmap(error, h_axis, v_axis, vmin=vmin, vmax=vmax, ax=ax)
+    ax.set_title(f'{"NMSE" if normalize else "MSE"} ${varname}$')
     ax.set_xlabel('Target $x^{*}_0$')
     ax.set_ylabel('Target $x^{*}_1$')
-    fig.tight_layout()
 
     return fig, ax, error

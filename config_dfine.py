@@ -96,7 +96,7 @@ _config.lr.explr.step_size = 15 # Steps to decay the learning rate, becomes pure
 # optimizer
 _config.optim = CN()
 _config.optim.eps = 1e-8 # Epsilon for Adam optimizer
-_config.optim.grad_clip = 1. # Gradient clipping norm
+_config.optim.grad_clip = 1 # Gradient clipping norm
 
 
 def get_default_config():

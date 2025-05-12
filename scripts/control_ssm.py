@@ -29,10 +29,8 @@ MAKE_PLOTS = False #global toggle for printing/plotting
 ssm_config = {'manifold': 'swiss',
               'dim_a': 2,
               'dim_y': 3,
-              # 'A': torch.tensor([[.95,   0.05],
-              #                    [.05,   0.9]])
-              'A': torch.tensor([[1,   0.05],
-                                 [0,   0.98]])
+              'A': torch.tensor([[.95,   0.05],
+                                 [.05,   0.9]])
               }
 
 manifold = ssm_config.pop('manifold')
@@ -44,14 +42,14 @@ print('eigvals:', [e.real.item() if e.imag==0 else e for e in torch.linalg.eigva
 
 
 #%% Generate DFINE training data
-data_config = {'num_seqs': 2**16,
+data_config = {'num_seqs': 1024,
                'num_steps': 200,
                'lo': -0.5,
                'hi': 0.5,
                'levels': 2}
 
-torch.manual_seed(123)
-x_train, a_train, y_train, u_train = SSM.generate_dataset(ssm, **data_config)
+# torch.manual_seed(123)
+x_train, a_train, y_train, u_train = SSM.generate_dataset(ssm, x0_min=-10, x0_max=10, **data_config)
 train_data = DFINEDataset(y_train, u_train)
 
 #%%
@@ -91,7 +89,7 @@ model_config = {
         'loss.scale_l2': 0,
 
         'loss.steps_ahead': [1,2,3,4],
-        'loss.scale_steps_ahead': [1.,1.,1.,1.],
+        'loss.scale_steps_ahead': [1,1,1,1],
 
         # 'loss.scale_dyn_x_loss': 0.,
         # 'loss.scale_con_a_loss': 1000.,
@@ -130,13 +128,13 @@ closed_loop_config = {'ground_truth': '',
                       }
 
 
-run_config = {'num_steps': 100,
+run_config = {'num_steps': 50,
               }
 
-control_config = {'R': 1, #control
+control_config = {'R': 1e-10, #control
                   'Q': 0, #state
-                  'Qf': 10, #final state
-                  'horizon': run_config['num_steps']-1, #TODO: why -1 ??
+                  'Qf': 1e10, #final state
+                  'horizon': run_config['num_steps'], #TODO: why -1 ??
                   # 'penalize_obs' : False,
                   # 'include_u_ss' : False
                   }
@@ -148,11 +146,11 @@ closed_loop = make_closed_loop(plant=ssm,
                                **closed_loop_config)
 
 
-x_target = None #default
+# x_target = None #default
 # x_target = [3.5, 3.5]
-# x_target = [(-4, 4, 21), (-4, 4, 21)]
+x_target = [(-4, 4, 41), (-4, 4, 41)]
 
-x_target, a_target, y_target = SSM.make_target(ssm, x_target)
+x_target, a_target, y_target = SSM.make_target(closed_loop.plant, x_target)
 closed_loop.run(y_target=y_target, **run_config)
 
 
@@ -160,29 +158,38 @@ closed_loop.run(y_target=y_target, **run_config)
 plot_x_target = [5*torch.pi, 5.]
 seq_num = approx_indexof(plot_x_target, x_target)[1]
 
-closed_loop.model.plot_all(seq_num=seq_num)
+closed_loop.model.plot_all(seq_num=seq_num, x_target=x_target, x=closed_loop.plant.x_seq, a_target=a_target, a=closed_loop.plant.a_seq)
 
 #%% Plot controlled trajectory on the manifold in 3D
 plot_x_target = [5*torch.pi, 5.]
 seq_num = approx_indexof(plot_x_target, x_target)[1]
 
-fig, ax = ssm.f.plot_manifold(rlim=(0, 6*torch.pi))
-_, ax = plot_parametric(closed_loop.model.y[seq_num,:,:], mode='line', varname='y', ax=ax)
+# fig, ax = ssm.f.plot_manifold(rlim=(0, 6*torch.pi))
+# _, ax = plot_parametric(closed_loop.model.y[seq_num,:,:], mode='line', varname='y', ax=ax)
 
-# actual init and target
-ax.scatter(*closed_loop.model.y[seq_num,0,:], marker='.', s=400, c='k')
-ax.scatter(*closed_loop.model.y_target[seq_num], marker='*', s=300, c='k')
+# # actual init and target
+# ax.scatter(*closed_loop.model.y[seq_num,0,:], marker='.', s=400, c='k')
+# ax.scatter(*closed_loop.model.y_target[seq_num], marker='*', s=300, c='k')
 
-# estimated init and target
-ax.scatter(*closed_loop.model.y_hat[seq_num,0,:], marker=MarkerStyle('.', fillstyle='none'), s=400, c='k')
-ax.scatter(*closed_loop.model.y_hat_target[seq_num], marker=MarkerStyle('*', fillstyle='none'), s=300, c='k')
+# # estimated init and target
+# ax.scatter(*closed_loop.model.y_hat[seq_num,0,:], marker=MarkerStyle('.', fillstyle='none'), s=400, c='k')
+# ax.scatter(*closed_loop.model.y_hat_target[seq_num], marker=MarkerStyle('*', fillstyle='none'), s=300, c='k')
 
 
 #%% Plot error heatmap
-seq_num = None
-fig, ax, error = SSM.plot_error_heatmap(closed_loop.model.y,
-                                        closed_loop.model.y_target,
-                                        x_target, varname='y')
-if seq_num is not None:
-    ax.scatter(*closed_loop.plant.x_seq[seq_num,0,:], marker='.', s=200, c='k')
-    ax.scatter(*x_target[seq_num], marker='*', s=150, c='k')
+sequences = {'x': (closed_loop.plant.x_seq, x_target),
+             'a': (closed_loop.plant.a_seq, a_target),
+             'y': (closed_loop.plant.y_seq, y_target)}
+
+n_vars = len(sequences)
+fig, axs = plt.subplots(1, n_vars, sharex=True, sharey=True, figsize=(4*n_vars, 3.5))
+axs = np.atleast_1d(axs).flatten()
+
+for i, (varname, (seq, target)) in enumerate(sequences.items()):
+    SSM.plot_error_heatmap(seq, target, x_target, varname=varname, ax=axs[i])
+
+    if seq_num is not None:
+        axs[i].scatter(*closed_loop.plant.x_seq[seq_num, 0, :], marker='.', s=200, c='k')
+        axs[i].scatter(*x_target[seq_num], marker='*', s=150, c='k')
+
+fig.tight_layout()
