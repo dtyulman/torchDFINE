@@ -37,17 +37,16 @@ class MLP(nn.Module):
         self.activation_fn = kwargs.pop('activation_fn', nn.Tanh())
 
         # Create the hidden layers and initialize their weights based on desired initialization function
-        bias = False #False for debugging computation graph
         ff = []
         current_dim = self.input_dim
         for i, dim in enumerate(self.layer_list):
-            layer = nn.Linear(current_dim, dim, bias=bias)
+            layer = nn.Linear(current_dim, dim)
             self.kernel_initializer_fn(layer.weight.data)
             current_dim = dim
             ff.append(layer)
             ff.append(self.activation_fn)
 
-        out_layer = nn.Linear(current_dim, self.output_dim, bias=bias)
+        out_layer = nn.Linear(current_dim, self.output_dim)
         self.kernel_initializer_fn(out_layer.weight.data)
         ff.append(out_layer)
 
