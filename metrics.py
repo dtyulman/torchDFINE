@@ -35,7 +35,7 @@ class Mean(Metric):
         - value: torch.Tensor, shape: (), Value to add to sum
         - batch_size: torch.Tensor, shape: (), Number of samples that 'value' is averaged over
         '''
-        value = value.clone().detach()
+        value = value.detach().clone()
         batch_size = torch.tensor(batch_size)
         self.sum += value.cpu() * batch_size
         self.num_samples += batch_size

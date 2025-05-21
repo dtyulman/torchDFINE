@@ -91,7 +91,9 @@ def is_running_in_slurm():
 
 
 def run_me_on_remote(time='48:00:00', cpus=4, mem=48, partition='main', job_name=''):
-    """Call this at the top of any script to launch it on the cluster automatically."""
+    """Call this at the top of any script to launch it on the cluster automatically.
+    Partitions on Discovery: https://www.carc.usc.edu/user-guides/hpc-systems/discovery/resource-overview-discovery
+    """
     if not is_running_in_slurm():
         script_LOCAL_PATH = os.path.abspath(sys.argv[0])
         script_name = os.path.basename(script_LOCAL_PATH)

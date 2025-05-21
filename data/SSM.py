@@ -73,9 +73,9 @@ class NonlinearStateSpaceModel():
 
 
     def __repr__(self):
-        Q = self.Q_distr.covariance_matrix if self.Q_distr is not None else 0
-        R = self.R_distr.covariance_matrix if self.R_distr is not None else 0
-        S = self.S_distr.covariance_matrix if self.S_distr is not None else 0
+        Q = self.Q_distr.covariance_matrix if self.Q_distr is not None else torch.tensor(0)
+        R = self.R_distr.covariance_matrix if self.R_distr is not None else torch.tensor(0)
+        S = self.S_distr.covariance_matrix if self.S_distr is not None else torch.tensor(0)
 
         return (
             self._format_repr('A', self.A) +

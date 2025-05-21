@@ -134,10 +134,10 @@ if VERBOSE:
 #%% Load, init, or train DFINE
 
 #Load
-# model_config = {
-#     'load_path': '/Users/dtyulman/Drive/dfine_ctrl/torchDFINE/results/train_logs/2024-12-25/20-32-27_rnn_reach_lin_ctrltsk_u=-0.5-0.5-2_y=h_nx=32_ny=32_nu=2',
-#     'ckpt': 80
-#     }
+model_config = {
+    'load_path': '/Users/dtyulman/Drive/dfine_ctrl/torchDFINE/results/train_logs/2024-12-25/20-32-27_rnn_reach_lin_ctrltsk_u=-0.5-0.5-2_y=h_nx=32_ny=32_nu=2',
+    'ckpt': 80
+    }
 
 
 #Init with ground truth system
@@ -147,39 +147,39 @@ if VERBOSE:
 
 
 #Train
-model_config = {
-    'train_data': train_data,
-    'config': {
-        'model.dim_x': 32,
-        'model.dim_a': rnn.dim_y,
-        'model.dim_y': rnn.dim_y,
-        'model.dim_u': rnn.dim_u,
-        'model.hidden_layer_list': [64,64],
-        'model.activation': 'relu',
+# model_config = {
+#     'train_data': train_data,
+#     'config': {
+#         'model.dim_x': 32,
+#         'model.dim_a': rnn.dim_y,
+#         'model.dim_y': rnn.dim_y,
+#         'model.dim_u': rnn.dim_u,
+#         'model.hidden_layer_list': [64,64],
+#         'model.activation': 'relu',
 
-        'train.plot_save_steps': 10,
-        'train.num_epochs': 100,
-        'train.batch_size': 64,
-        'lr.scheduler': 'constantlr',
-        'lr.init': 0.001,
-        # 'lr.scheduler': 'explr'
-        # lr.explr.gamma = 0.9 # Multiplicative factor of learning rate decay
-        # lr.explr.step_size = 15 # Steps to decay the learning rate, becomes purely exponential if step is 1
+#         'train.plot_save_steps': 10,
+#         'train.num_epochs': 100,
+#         'train.batch_size': 64,
+#         'lr.scheduler': 'constantlr',
+#         'lr.init': 0.001,
+#         # 'lr.scheduler': 'explr'
+#         # lr.explr.gamma = 0.9 # Multiplicative factor of learning rate decay
+#         # lr.explr.step_size = 15 # Steps to decay the learning rate, becomes purely exponential if step is 1
 
-        'loss.scale_l2': 0.0001,
-        'optim.grad_clip': float('inf'),
-        }
-    }
+#         'loss.scale_l2': 0.0001,
+#         'optim.grad_clip': float('inf'),
+#         }
+#     }
 
-tag = 'mnist'
-tag = f'_{tag}' if tag else ''
-save_str = (f"_rnn_{rnn_config['dataset_kwargs']['name']}{tag}"
-            f"_u={data_config['lo']}-{data_config['hi']}-{data_config['levels']}"
-            f"_y={rnn_config['rnn_kwargs']['obs_fn']}"
-            f"_nx={model_config['config']['model.dim_x']}"
-            f"_ny={model_config['config']['model.dim_y']}"
-            f"_nu={model_config['config']['model.dim_u']}")
-model_config['config']['savedir_suffix'] = save_str
+# tag = 'mnist'
+# tag = f'_{tag}' if tag else ''
+# save_str = (f"_rnn_{rnn_config['dataset_kwargs']['name']}{tag}"
+#             f"_u={data_config['lo']}-{data_config['hi']}-{data_config['levels']}"
+#             f"_y={rnn_config['rnn_kwargs']['obs_fn']}"
+#             f"_nx={model_config['config']['model.dim_x']}"
+#             f"_ny={model_config['config']['model.dim_y']}"
+#             f"_nu={model_config['config']['model.dim_u']}")
+# model_config['config']['savedir_suffix'] = save_str
 
 
 #%%
@@ -212,9 +212,17 @@ closed_loop_config = {'ground_truth': '',
                       'suppress_plant_noise': True,
                       }
 
-run_config = {'num_steps': 50,
+run_config = {'num_steps': 300,
               't_on': 0,
               }
+control_config = {'mode': 'LQR',
+                  'R':1,
+                    'Q': 1, #state
+                    # 'Qf': 1e8, #final state
+                    # 'horizon': run_config['num_steps']-run_config['t_on']-1,
+                  'penalize_obs': False, #Q ~ C^T @ C if True, else Q ~ I (same for Qf)
+                    'include_u_ss': True,
+                  }
 
 # control_config = {'mode': 'MPC',
 #                   'Q': 1e6, #state
@@ -222,16 +230,6 @@ run_config = {'num_steps': 50,
 #                   'u_min': -1,
 #                   'u_max': 1
 #                   }
-
-control_config = {'mode': 'LQR',
-                  'R':1e-7,
-                    # 'Q': 1, #state
-                    'Qf': 1e8, #final state
-                    'horizon': run_config['num_steps']-run_config['t_on']-1,
-                  'penalize_obs': False, #Q ~ C^T @ C if True, else Q ~ I (same for Qf)
-                    # 'include_u_ss': False,
-                  }
-
 
 # control_config = {'mode': 'MinE',
 #                   'num_steps': run_config['num_steps']-run_config['t_on']-1,
@@ -252,12 +250,15 @@ z_target = torch.tensor([[1,1.],[1,-1],[-1,-1],[-1,1],[0,1],[1,0],[0,-1],[-1,0.]
 
 # Model
 dfine = deepcopy(trainer.dfine)
-# dfine.encoder = dfine.decoder = WrapperModule(identity)
+dfine.encoder = dfine.decoder = WrapperModule(identity)
 
 # Plant
 # plant = rnn
+# rnn.init_h = 'zeros'
+aux_inputs = [{'s': z_target}] if data_config['include_task_input'] else None #[{'s':[b,z]}]}
+
 plant = SSM.make_ssm(dfine)
-plant.obs_fn = RNN.ObservationFunction(rnn, obs='h') #hack to make the NLSSM look like the RNN to the plot_outputs_2d function
+plant.obs_fn = RNN.ObservationFunction(obs='h', dim_h=rnn.dim_h) #hack to make the NLSSM look like the RNN to the plot_outputs_2d function
 plant.compute_output = rnn.compute_output
 
 # Controller
@@ -270,32 +271,22 @@ closed_loop = make_closed_loop(plant=plant, dfine=dfine, controller=controller, 
 h_target_mode = 'unperturbed'
 y_target, h_target, z_target = RNN.make_y_target(rnn, z_target, h_target_mode, num_steps=rnn_train_data.num_steps)
 
-rnn.init_h = 'zeros'
-aux_inputs = [{'s': z_target}] if data_config['include_task_input'] else None #[{'s':[b,z]}]}
-
-
 
 #% Get target in x_hat space, project onto set of valid equilibria
 x_hat_target = closed_loop.model.estimate_target(y_target)
 
-x_hat_target_proj1 = controller.find_valid_equilibrium(x_hat_target, alg=1) # project it to nearest equilibrium
-x_hat_target_proj2 = controller.find_valid_equilibrium(x_hat_target, alg=2) # project it to nearest equilibrium
+x_hat_target_proj_eq1 = controller.find_valid_equilibrium(x_hat_target, alg=1) # project it to nearest equilibrium
+x_hat_target_proj_eq2 = controller.find_valid_equilibrium(x_hat_target, alg=2) # project it to nearest equilibrium
 # x_hat_target_proj3 = controller.find_valid_equilibrium(x_hat_target, closed_loop=True, alg=None) # project it to nearest equilibrium
 
-print((x_hat_target - x_hat_target_proj1).norm(dim=1))
-print((x_hat_target - x_hat_target_proj2).norm(dim=1))
-# print((x_hat_target - x_hat_target_proj3).norm(dim=1))
-
-
 #% Get target in x_hat space, project onto controllable subspace
-x_hat_target_proj, Uc = SSM.is_in_controllable_subspace(
-                                            x_hat_target,
-                                            dfine.ldm.A, dfine.ldm.B,
-                                            rank=2
-                                            )
+x_hat_target_proj_ctrb, ctrb_basis, ctrb_svals = SSM.is_in_controllable_subspace(
+                                            x_hat_target, dfine.ldm.A, dfine.ldm.B,
+                                            rank=2)
 
-print((x_hat_target - x_hat_target_proj).norm(dim=1))
-
+print('diff proj_eq1', (x_hat_target - x_hat_target_proj_eq1).norm(dim=1).numpy())
+print('diff proj_eq2', (x_hat_target - x_hat_target_proj_eq2).norm(dim=1).numpy())
+print('diff proj_ctrb', (x_hat_target - x_hat_target_proj_ctrb).norm(dim=1).numpy())
 
 #%% Visualize x_targets and their projections to controllable subspace
 fig, axs = plot_high_dim(x_hat_target, d=2, label='$\\widehat{x}^*$', varname='\\widehat{x}')
@@ -310,7 +301,7 @@ pprint(RNN.compute_control_errors(closed_loop.plant, closed_loop.model))
 
 
 #%% Run control with x_hat_target given in model's latent space
-x_hat_target = x_hat_target_proj
+x_hat_target = x_hat_target_proj2
 
 closed_loop.run(x_hat_target=x_hat_target, aux_inputs=aux_inputs,
                 # plant_init='x_hat_target',

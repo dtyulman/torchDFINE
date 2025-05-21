@@ -29,10 +29,10 @@ _config.model.dim_y = None # Dimensionality of neural observations
 _config.model.dim_a = None # Dimensionality of manifold latent factor, a choice higher than dim_y (above) may lead to overfitting
 _config.model.dim_x = None # Dimensionality of dynamic latent factor, it's recommended to set it same as dim_a (above), please see Extended Data Fig. 8
 _config.model.dim_u = None # Dimensionality of control input
-_config.model.init_A_scale = 1 # Initialization scale of LDM state transition matrix
-_config.model.init_B_scale = 1 # Initialization scale of LDM control-input matrix
-_config.model.init_C_scale = 1 # Initialization scale of LDM observation matrix
-_config.model.init_D_scale = 1 # Initialization scale of LDM feed-through matrix
+_config.model.init_A_scale = 1. # Initialization scale of LDM state transition matrix
+_config.model.init_B_scale = 1. # Initialization scale of LDM control-input matrix
+_config.model.init_C_scale = 1. # Initialization scale of LDM observation matrix
+_config.model.init_D_scale = 1. # Initialization scale of LDM feed-through matrix
 _config.model.fit_D_matrix = False # If true, fits a feed-through matrix
 _config.model.init_W_scale = 0.5 # Initialization scale of LDM process noise covariance matrix
 _config.model.init_R_scale = 0.5 # Initialization scale of LDM observation noise covariance matrix
@@ -56,10 +56,10 @@ _config.loss.scale_steps_ahead = [1.,1.,1.,1.] #relative weighting of each step 
 _config.loss.scale_l2 = 2e-3 # L2 regularization loss scale (we recommend a grid-search for the best value, i.e., a grid of [1e-4, 5e-4, 1e-3, 2e-3]). Please use 0 for nonlinear manifold simulations as it leads to a better performance.
 _config.loss.scale_control_loss = 0.
 _config.loss.scale_behv_recons = 20 # If _config.model.supervise_behv is True, scale for MSE of behavior reconstruction (We recommend a grid-search for the best value. It should be set to a large value).
-_config.loss.scale_spectr_reg_B = 0
-_config.loss.scale_forward_pred = 0 # Loss scale for forward prediction loss (output is predicted solely from the input)
-_config.loss.scale_dyn_x_loss = 0
-_config.loss.scale_con_a_loss = 0
+_config.loss.scale_spectr_reg_B = 0.
+_config.loss.scale_forward_pred = 0. # Loss scale for forward prediction loss (output is predicted solely from the input)
+_config.loss.scale_dyn_x_loss = 0.
+_config.loss.scale_con_a_loss = 0.
 
 
 # training
@@ -84,7 +84,7 @@ _config.lr.init = 0.02 # Initial learning rate
 _config.lr.cyclic = CN()
 _config.lr.cyclic.base_lr = 0.005 # Minimum learning rate for cyclic LR scheduler
 _config.lr.cyclic.max_lr = 0.02 # Maximum learning rate for cyclic LR scheduler
-_config.lr.cyclic.gamma = 1 # Envelope scale for exponential cyclic LR scheduler mode
+_config.lr.cyclic.gamma = 1. # Envelope scale for exponential cyclic LR scheduler mode
 _config.lr.cyclic.mode = 'triangular' # Mode for cyclic LR scheduler
 _config.lr.cyclic.step_size_up = 10 # Number of iterations in the increasing half of the cycle
 
@@ -96,7 +96,7 @@ _config.lr.explr.step_size = 15 # Steps to decay the learning rate, becomes pure
 # optimizer
 _config.optim = CN()
 _config.optim.eps = 1e-8 # Epsilon for Adam optimizer
-_config.optim.grad_clip = 1 # Gradient clipping norm
+_config.optim.grad_clip = 1. # Gradient clipping norm
 
 
 def get_default_config():

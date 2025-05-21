@@ -379,6 +379,30 @@ def find_nearest_solution(M, B, z, alg=1):
 
         # Final solution
         x = pinvM @ B @ u + x_null
+
+    elif alg == 3:
+        # def find_nearest_solution(M, B, z, alg=None):
+        """Find the vector x closest to z such that Mx ∈ Im(B)
+        M: [n,n]
+        B: [n,m]
+        z: [b,n] or [n]
+        """
+
+        n = M.shape[0]
+        assert M.shape == (n, n), "M must be square"
+        assert B.shape[0] == n,   "B must have same row dimension as M"
+        assert z.shape[-1] == n,  "z must have shape (n,) or (b, n)"
+
+        B_pinv = torch.linalg.pinv(B)
+        P_B = B @ B_pinv                          # (n, n)
+
+        I = torch.eye(n, dtype=M.dtype, device=M.device)
+        A = (I - P_B) @ M                         # (n, n)
+
+        A_pinv = torch.linalg.pinv(A)
+        P_ker = I - A_pinv @ A                    # (n, n)
+
+        return (P_ker @ z.unsqueeze(-1)).squeeze(-1)
     return x.squeeze(-1)
 
 
@@ -399,4 +423,6 @@ def make_controller(dfine, mode='LQR', clone_mats=True, **kwargs):
         controller = ConstantInputController(A,B,C, **kwargs)
     elif mode == 'MinE':
         controller = MinimumEnergyController(A,B, **kwargs)
+    else:
+        raise ValueError(f'Invalid mode: {mode}')
     return controller

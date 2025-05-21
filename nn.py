@@ -8,6 +8,8 @@ Shanechi Lab, University of Southern California
 import torch
 import torch.nn as nn
 
+from python_utils import WrapperModule
+
 
 def compute_mse(y_flat, y_hat_flat, mask_flat=None):
     '''
@@ -78,7 +80,7 @@ def get_activation_function(activation_str):
     elif activation_str.lower() == 'tanhshrink':
         return nn.Tanhshrink()
     elif activation_str.lower() == 'linear':
-        return lambda x: x
+        return WrapperModule(lambda x:x)
 
 
 def get_kernel_initializer_function(kernel_initializer_str):

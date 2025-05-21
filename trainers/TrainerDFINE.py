@@ -467,7 +467,7 @@ class TrainerDFINE(BaseTrainer):
         plt.close('all')
 
 
-    def create_k_step_ahead_plot(self, y_batch, y_pred_batch, mask_batch=None, epoch=1, trial_num=0, prefix='train', plot_n_dims=4):
+    def create_k_step_ahead_plot(self, y_batch, y_pred_batch, mask_batch=None, epoch=1, trial_num=0, prefix='train', plot_n_dims=4, save_and_close=True):
         '''
         Creates true and k-step ahead predicted neural observation plots during training and validation
 
@@ -518,9 +518,10 @@ class TrainerDFINE(BaseTrainer):
 
         # Save the plot under plot_save_dir
         fig.tight_layout()
-        plot_name = f'{prefix}_k_step_obs_{epoch}.png'
-        plt.savefig(os.path.join(self.plot_save_dir, plot_name))
-        plt.close('all')
+        if save_and_close:
+            plot_name = f'{prefix}_k_step_obs_{epoch}.png'
+            plt.savefig(os.path.join(self.plot_save_dir, plot_name))
+            plt.close('all')
 
 
     def create_latent_factor_plot(self, f, epoch=1, trial_num=0, prefix='train', feat_name='x_smooth'):
@@ -855,5 +856,6 @@ class TrainerDFINE(BaseTrainer):
             self.writer.add_scalar('scale/con_a_loss', self.dfine.scale_con_a_loss, epoch)
 
             self.writer.add_scalar('learning_rate', self.lr_scheduler.get_last_lr()[0], epoch)
+
             if self.config.model.supervise_behv:
                 self.writer.add_scalar('scale_behv_recons', self.dfine.scale_behv_recons, epoch)

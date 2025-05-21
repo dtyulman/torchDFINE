@@ -30,31 +30,15 @@ class DFINEDataset(Dataset):
         '''
 
         self.y = y
-
-        # If control input is not provided, initialize it with 1-dimensional zero input
-        if u is None:
-            self.u = torch.zeros(*y.shape[:-1], 1)
-        else:
-            self.u = u
-
-        # If behv is not provided, initialize it with zeros.
-        if behv is None:
-            self.behv = torch.zeros(y.shape[:-1]).unsqueeze(dim=-1)
-        else:
-            self.behv = behv
-
-        # If mask is not provided, initialize it with ones.
-        if mask is None:
-            self.mask = torch.ones(y.shape[:-1]).unsqueeze(dim=-1)
-        else:
-            self.mask = mask
+        self.u = torch.zeros(*y.shape[:-1], 1) if u is None else u  # If control input is not provided, initialize with 1D zero input
+        self.behv = torch.zeros(*y.shape[:-1], 1) if behv is None else behv  # If behv is not provided, initialize with zeros
+        self.mask = torch.ones(*y.shape[:-1], 1) if mask is None else mask  # If mask is not provided, initialize with ones
 
 
     def __len__(self):
         '''
         Returns the length of the dataset
         '''
-
         return self.y.shape[0]
 
 

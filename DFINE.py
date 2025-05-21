@@ -431,14 +431,14 @@ class DFINE(nn.Module):
 
             avg_k_steps_mse += scale_k * k_steps_mse
 
-
-        avg_k_steps_mse = avg_k_steps_mse / sum(self.config.loss.scale_steps_ahead)
+        if (sum_scale_k := sum(self.config.loss.scale_steps_ahead)) > 0:
+            avg_k_steps_mse = avg_k_steps_mse / sum_scale_k
         loss_dict['avg_k_steps_mse'] = avg_k_steps_mse
 
 
         # Get MSE loss for behavior reconstruction, 0 if we dont supervise our model with behavior data
-        behv_mse = 0
-        behv_loss = 0
+        behv_mse = torch.tensor(0.)
+        behv_loss = torch.tensor(0.)
         if self.config.model.supervise_behv:
             behv_mse = compute_mse(y_flat=behv[..., self.config.model.which_behv_dims].reshape(-1, self.dim_behv),
                                    y_hat_flat=model_vars['behv_hat'].reshape(-1, self.dim_behv),
@@ -449,14 +449,14 @@ class DFINE(nn.Module):
 
 
         # L2 regularization loss
-        reg_loss = 0
+        reg_loss = torch.tensor(0.)
         if self.scale_l2 > 0:
             self.scale_l2 * sum([torch.norm(param) for name, param in self.named_parameters() if 'weight' in name])
             loss_dict['reg_loss'] = reg_loss
 
 
         # B matrix inverse spectral norm regularization loss
-        spectr_reg_B_loss = 0
+        spectr_reg_B_loss = torch.tensor(0.)
         if self.scale_spectr_reg_B > 0:
             # spectr_reg_B_loss = self.scale_spectr_reg_B / torch.linalg.svd(self.ldm.B)[1].min()
             spectr_reg_B_loss = self.scale_spectr_reg_B * (torch.linalg.cond(self.ldm.B) - 1)
@@ -466,7 +466,7 @@ class DFINE(nn.Module):
         # Dynamics consistency loss
         dyn_x_mse = F.mse_loss(model_vars['x_pred'], model_vars['x_filter'][:,1:])
         loss_dict['dyn_x_mse'] = dyn_x_mse
-        dyn_x_loss = 0
+        dyn_x_loss = torch.tensor(0.)
         if self.scale_dyn_x_loss > 0:
             dyn_x_loss = self.scale_dyn_x_loss * dyn_x_mse
             loss_dict['dyn_x_loss'] = dyn_x_loss
@@ -475,15 +475,19 @@ class DFINE(nn.Module):
         # Manifold latent inference/encoding consistency loss
         con_a_mse = F.mse_loss(model_vars['a_hat'], model_vars['a_filter'])
         loss_dict['con_a_mse'] = con_a_mse
-        con_a_loss = 0
+        con_a_loss = torch.tensor(0.)
         if self.scale_con_a_loss > 0:
             con_a_loss = self.scale_con_a_loss * con_a_mse
             loss_dict['con_a_loss'] = con_a_loss
 
 
         # Control loss
-        control_loss = 0
-        if y_target_cl is not None:
+        control_loss = torch.tensor(0.)
+        if y_target_cl is None:
+            if self.scale_control_loss > 0:
+                print('Control loss scaling > 0, but no control target available.')
+                # raise ValueError('Control loss scaling > 0, but no control target available.')
+        else:
             #TODO: should I use y_hat from closed-loop, or from open-loop in model_vars?
             # are they identical? --> maybe... torch.allclose==True
             # are their computation graphs? (assuming I don't detach u before putting into dfine.forward)
@@ -500,6 +504,7 @@ class DFINE(nn.Module):
             if self.scale_control_loss > 0:
                 control_loss = self.scale_control_loss * control_mse
                 loss_dict['control_loss'] = control_loss
+
 
         # Final loss
         loss = avg_k_steps_mse + behv_loss + reg_loss + spectr_reg_B_loss + control_loss + dyn_x_loss + con_a_loss
