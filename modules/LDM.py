@@ -163,13 +163,13 @@ class LDM(nn.Module):
 
         Returns:
         ------------
-        - mu_pred_all: torch.Tensor, shape: (num_steps, num_seq, dim_x),
+        - mu_pred: torch.Tensor, shape: (num_steps, num_seq, dim_x),
             Dynamic latent factor predictions (t+1|t) where first index of the second dimension has x_{1|0}
-        - mu_t_all: torch.Tensor, shape: (num_steps, num_seq, dim_x),
+        - mu_filt: torch.Tensor, shape: (num_steps, num_seq, dim_x),
             Dynamic latent factor filtered estimates (t|t) where first index of the second dimension has x_{0|0}
-        - Lambda_pred_all: torch.Tensor, shape: (num_steps, num_seq, dim_x, dim_x),
+        - Lambda_pred: torch.Tensor, shape: (num_steps, num_seq, dim_x, dim_x),
             Dynamic latent factor estimation error covariance predictions (t+1|t) where first index of the second dimension has P_{1|0}
-        - Lambda_t_all: torch.Tensor, shape: (num_steps, num_seq, dim_x, dim_x),
+        - Lambda_filt: torch.Tensor, shape: (num_steps, num_seq, dim_x, dim_x),
             Dynamic latent factor estimation error covariance filtered estimates (t|t) where first index of the second dimension has P_{0|0}
         '''
 
@@ -188,58 +188,59 @@ class LDM(nn.Module):
         a_masked = torch.mul(a, mask) # (num_seq, num_steps, dim_a) x (num_seq, num_steps, 1)
 
         # Initialize mu_0 and Lambda_0
-        mu_pred = self.mu_0.unsqueeze(dim=0).repeat(num_seq, 1) # (num_seq, dim_x)
-        Lambda_pred = self.Lambda_0.unsqueeze(dim=0).repeat(num_seq, 1, 1) # (num_seq, dim_x, dim_x)
+        mu_pred_t = self.mu_0.unsqueeze(dim=0).repeat(num_seq, 1) #[b,x]
+        Lambda_pred_t = self.Lambda_0.unsqueeze(dim=0).repeat(num_seq, 1, 1) #[b,x,x]
 
         # Filtered and predicted estimates/error covariance. NOTE: The last time-step of the prediction has T+1|T, which may not be of interest
-        mu_t_all = [] #mu_t_all[t,i,:] = mu_{t|t} for t=0..T-1
-        Lambda_t_all = []
-        mu_pred_all = [] #mu_pred_all[t,i,:] = mu_{t+1|t} for t=0..T-1
-        Lambda_pred_all = []
+        mu_filt = [] #mu_filt[t,i,:] = mu_{t|t} for t=0..T-1
+        Lambda_filt = []
+        mu_pred = [] #mu_pred[t,i,:] = mu_{t+1|t} for t=0..T-1
+        Lambda_pred = []
 
         # Get covariance matrices
         W, R = self._get_covariance_matrices()
+        I = torch.eye(self.dim_x, device=self.mu_0.device, dtype=self.mu_0.dtype)
 
         for t in range(num_steps):
             # Obtain residual
-            a_pred = (self.C @ mu_pred.unsqueeze(dim=-1)).squeeze(dim=-1) # (num_seq, dim_a)
-            r = a_masked[:, t, ...] - a_pred # (num_seq, dim_a)
+            a_pred_t = (self.C @ mu_pred_t.unsqueeze(dim=-1)).squeeze(dim=-1) #[b,a]
+            r = a_masked[:, t, ...] - a_pred_t #[b,a]
             if self.fit_D_matrix:
-                r = r - (self.D @ u[:,t,...].unsqueeze(dim=-1)).squeeze(dim=-1) # (num_seq, dim_a)
+                r = r - (self.D @ u[:,t,...].unsqueeze(dim=-1)).squeeze(dim=-1) #[b,a]
 
             # Project system uncertainty into measurement space, get Kalman Gain
-            S = self.C @ Lambda_pred @ self.C.T + R # (num_seq, dim_a, dim_a)
-            S_inv = torch.inverse(S) # (num_seq, dim_a, dim_a)
-            K = Lambda_pred @ self.C.T @ S_inv # (num_seq, dim_x, dim_a)
-            K = torch.mul(K, mask[:, t, ...].unsqueeze(dim=1))  # (num_seq, dim_x, dim_a) x (num_seq, 1,  1)
+            S = self.C @ Lambda_pred_t @ self.C.T + R #[b,a,a]
+
+            # More stable version of K = Lambda_pred_t @ self.C.T @ torch.inverse(S)
+            #Cholesky faster than K = torch.linalg.solve(S, Lambda_pred_t @ self.C.T, left=False)
+            L = torch.linalg.cholesky(S) #because assumes S = L @ L.T
+            K = torch.cholesky_solve((Lambda_pred_t @ self.C.T).transpose(-1,-2), L).transpose(-1,-2)  #[b,x,a]
+            K = torch.mul(K, mask[:, t, ...].unsqueeze(dim=1)) #[b,x,a]@[b,1,1]
 
             # Get current mu and Lambda
-            mu_t = mu_pred + (K @ r.unsqueeze(dim=-1)).squeeze(dim=-1) # (num_seq, dim_x)
-            I_KC = torch.eye(self.dim_x) - K @ self.C # (num_seq, dim_x, dim_x)
-            Lambda_t = I_KC @ Lambda_pred # (num_seq, dim_x, dim_x)
+            mu_t = mu_pred_t + (K @ r.unsqueeze(dim=-1)).squeeze(dim=-1) #[b,x]
+            I_KC = I - K @ self.C #[b,x,x]
+            #Joseph form is more stable (but slower) than Lambda_filt_t = I_KC @ Lambda_pred_t #[b,x,x]
+            Lambda_filt_t = I_KC @ Lambda_pred_t @ I_KC.transpose(-1,-2) + K @ R @ K.transpose(-1,-2)
+            Lambda_filt_t = 0.5 * (Lambda_filt_t + Lambda_filt_t.transpose(-1,-2)) #symmetrize
 
             # Prediction
-            if t < num_steps-1:
-                u_t = u[:, t, ...]
-            else:
-                #last timestep of predictions will be dropped since it's T+1|T so give it dummy input
-                u_t = torch.full((num_seq, self.dim_u), torch.nan)
-
-            mu_pred = (self.A @ mu_t.unsqueeze(dim=-1) + self.B @ u_t.clone().unsqueeze(dim=-1)).squeeze(dim=-1) #(num_seq, dim_x, dim_x) x (num_seq, dim_x, 1) + (num_seq, dim_x, dim_u) x (num_seq, dim_u, 1) --> (num_seq, dim_x, 1) --> (num_seq, dim_x)
-            Lambda_pred = self.A @ Lambda_t @ self.A.T + W #(num_seq, dim_x, dim_x) x (num_seq, dim_x, dim_x) x (num_seq, dim_x, dim_x) --> (num_seq, dim_x, dim_x)
+            u_t = u[:, t, ...] if t < num_steps-1 else torch.full((num_seq, self.dim_u), torch.nan) #last timestep of predictions will be dropped since it's T+1|T so give it dummy input to expose potential bugs
+            mu_pred_t = (self.A @ mu_t.unsqueeze(dim=-1) + self.B @ u_t.clone().unsqueeze(dim=-1)).squeeze(dim=-1) #[x,x]@[b,x,1]+[x,u]@[b,u,1]->[b,x,1]->[b,x]
+            Lambda_pred_t = self.A @ Lambda_filt_t @ self.A.T + W #[x,x]@[b,x,x]@[x,x]+[x,x]->[b,x,x]
 
             # Store predictions and updates
-            mu_pred_all.append(mu_pred)
-            mu_t_all.append(mu_t)
-            Lambda_pred_all.append(Lambda_pred)
-            Lambda_t_all.append(Lambda_t)
+            mu_filt.append(mu_t)
+            Lambda_filt.append(Lambda_filt_t)
+            mu_pred.append(mu_pred_t)
+            Lambda_pred.append(Lambda_pred_t)
 
-        mu_pred_all = torch.stack(mu_pred_all, dim=0) #[t,b,x]
-        mu_t_all = torch.stack(mu_t_all, dim=0) #[t,b,x]
-        Lambda_pred_all = torch.stack(Lambda_pred_all, dim=0) #[t,b,x,x]
-        Lambda_t_all = torch.stack(Lambda_t_all, dim=0) #[t,b,x,x]
+        mu_pred = torch.stack(mu_pred, dim=0) #[t,b,x]
+        mu_filt = torch.stack(mu_filt, dim=0) #[t,b,x]
+        Lambda_pred = torch.stack(Lambda_pred, dim=0) #[t,b,x,x]
+        Lambda_filt = torch.stack(Lambda_filt, dim=0) #[t,b,x,x]
 
-        return mu_pred_all, mu_t_all, Lambda_pred_all, Lambda_t_all
+        return mu_pred, mu_filt, Lambda_pred, Lambda_filt
 
 
     def filter(self, a, u=None, mask=None):
@@ -257,41 +258,41 @@ class LDM(nn.Module):
 
         Returns:
         ------------
-        - mu_pred_all: torch.Tensor, shape: (num_seq, num_steps, dim_x),
+        - mu_pred: torch.Tensor, shape: (num_seq, num_steps, dim_x),
             Dynamic latent factor predictions (t+1|t) where first index of the second dimension has x_{1|0}
-        - mu_t_all: torch.Tensor, shape: (num_seq, num_steps, dim_x),
+        - mu_filt: torch.Tensor, shape: (num_seq, num_steps, dim_x),
             Dynamic latent factor filtered estimates (t|t) where first index of the second dimension has x_{0|0}
-        - Lambda_pred_all: torch.Tensor, shape: (num_seq, num_steps, dim_x, dim_x),
+        - Lambda_pred: torch.Tensor, shape: (num_seq, num_steps, dim_x, dim_x),
             Dynamic latent factor estimation error covariance predictions (t+1|t) where first index of the second dimension has P_{1|0}
-        - Lambda_t_all: torch.Tensor, shape: (num_seq, num_steps, dim_x, dim_x),
+        - Lambda_filt: torch.Tensor, shape: (num_seq, num_steps, dim_x, dim_x),
             Dynamic latent factor estimation error covariance filtered estimates (t|t) where first index of the second dimension has P_{0|0}
         '''
 
         # Run the forward iteration
-        mu_pred_all, mu_t_all, Lambda_pred_all, Lambda_t_all = self.compute_forwards(a=a, u=u, mask=mask)
+        mu_pred, mu_filt, Lambda_pred, Lambda_filt = self.compute_forwards(a=a, u=u, mask=mask)
 
         # Swap num_seq and num_steps dimensions
-        mu_pred_all = torch.permute(mu_pred_all, (1, 0, 2))
-        mu_t_all = torch.permute(mu_t_all, (1, 0, 2))
-        Lambda_pred_all = torch.permute(Lambda_pred_all, (1, 0, 2, 3))
-        Lambda_t_all = torch.permute(Lambda_t_all, (1, 0, 2, 3))
+        mu_pred = torch.permute(mu_pred, (1, 0, 2))
+        mu_filt = torch.permute(mu_filt, (1, 0, 2))
+        Lambda_pred = torch.permute(Lambda_pred, (1, 0, 2, 3))
+        Lambda_filt = torch.permute(Lambda_filt, (1, 0, 2, 3))
 
-        return mu_pred_all, mu_t_all, Lambda_pred_all, Lambda_t_all
+        return mu_pred, mu_filt, Lambda_pred, Lambda_filt
 
 
-    def compute_backwards(self, mu_pred_all, mu_t_all, Lambda_pred_all, Lambda_t_all):
+    def compute_backwards(self, mu_pred, mu_filt, Lambda_pred, Lambda_filt):
         '''
         Performs backward iteration for Rauch-Tung-Striebel (RTS) Smoother
 
         Parameters:
         ------------
-        - mu_pred_all: torch.Tensor, shape: (num_seq, num_steps, dim_x),
+        - mu_pred: torch.Tensor, shape: (num_seq, num_steps, dim_x),
             Dynamic latent factor predictions (t+1|t) where first index of the second dimension has x_{1|0}
-        - mu_t_all: torch.Tensor, shape: (num_seq, num_steps, dim_x),
+        - mu_filt: torch.Tensor, shape: (num_seq, num_steps, dim_x),
             Dynamic latent factor filtered estimates (t|t) where first index of the second dimension has x_{0|0}
-        - Lambda_pred_all: torch.Tensor, shape: (num_seq, num_steps, dim_x, dim_x),
+        - Lambda_pred: torch.Tensor, shape: (num_seq, num_steps, dim_x, dim_x),
             Dynamic latent factor estimation error covariance predictions (t+1|t) where first index of the second dimension has P_{1|0}
-        - Lambda_t_all: torch.Tensor, shape: (num_seq, num_steps, dim_x, dim_x),
+        - Lambda_filt: torch.Tensor, shape: (num_seq, num_steps, dim_x, dim_x),
             Dynamic latent factor estimation error covariance filtered estimates (t|t) where first index of the second dimension has P_{0|0}
 
         Returns:
@@ -303,25 +304,25 @@ class LDM(nn.Module):
         '''
 
         # Get number of steps and number of trials
-        num_steps, num_seq, _ = mu_pred_all.shape
+        num_steps, num_seq, _ = mu_pred.shape
 
         # Create empty arrays for smoothed dynamic latent factors and error covariances
-        mu_back_all = torch.zeros((num_steps, num_seq, self.dim_x), device=mu_pred_all.device) # (num_steps, num_seq, dim_x)
-        Lambda_back_all = torch.zeros((num_steps, num_seq, self.dim_x, self.dim_x), device=mu_pred_all.device) # (num_steps, num_seq, dim_x, dim_x)
+        mu_back_all = torch.zeros((num_steps, num_seq, self.dim_x), device=mu_pred.device) # (num_steps, num_seq, dim_x)
+        Lambda_back_all = torch.zeros((num_steps, num_seq, self.dim_x, self.dim_x), device=mu_pred.device) # (num_steps, num_seq, dim_x, dim_x)
 
         # Last smoothed estimation is equivalent to the filtered estimation
-        mu_back_all[-1, ...] = mu_t_all[-1, ...]
-        Lambda_back_all[-1, ...] = Lambda_t_all[-1, ...]
+        mu_back_all[-1, ...] = mu_filt[-1, ...]
+        Lambda_back_all[-1, ...] = Lambda_filt[-1, ...]
 
         # Initialize iterable parameter
-        mu_back = mu_t_all[-1, ...]
+        mu_back = mu_filt[-1, ...]
         Lambda_back = Lambda_back_all[-1, ...]
 
         for t in range(num_steps-2, -1, -1): # iterate loop over reverse time: T-2, T-3, ..., 0, where the last time-step is T-1
-            J_t = Lambda_t_all[t, ...] @ self.A.T @ torch.inverse(Lambda_pred_all[t, ...]) # (num_seq, dim_x, dim_x) x (num_seq, dim_x, dim_x) x (num_seq, dim_x, dim_x)
-            mu_back = mu_t_all[t, ...] + (J_t @ (mu_back - mu_pred_all[t, ...]).unsqueeze(dim=-1)).squeeze(dim=-1) # (num_seq, dim_x) + (num_seq, dim_x, dim_x) x (num_seq, dim_x)
+            J_t = Lambda_filt[t, ...] @ self.A.T @ torch.inverse(Lambda_pred[t, ...]) #[b,x,x]@[b,x,x]@[b,x,x]
+            mu_back = mu_filt[t, ...] + (J_t @ (mu_back - mu_pred[t, ...]).unsqueeze(dim=-1)).squeeze(dim=-1) #[b,x]+[b,x,x]@[b,x]
 
-            Lambda_back = Lambda_t_all[t, ...] + J_t @ (Lambda_back - Lambda_pred_all[t, ...]) @ torch.permute(J_t, (0, 2, 1)) # (num_seq, dim_x, dim_x)
+            Lambda_back = Lambda_filt[t, ...] + J_t @ (Lambda_back - Lambda_pred[t, ...]) @ torch.permute(J_t, (0, 2, 1)) #[b,x,x]
 
             mu_back_all[t, ...] = mu_back
             Lambda_back_all[t, ...] = Lambda_back
@@ -344,36 +345,36 @@ class LDM(nn.Module):
 
         Returns:
         ------------
-        - mu_pred_all: torch.Tensor, shape: (num_seq, num_steps, dim_x),
+        - mu_pred: torch.Tensor, shape: (num_seq, num_steps, dim_x),
             Dynamic latent factor predictions (t+1|t) where first index of the second dimension has x_{1|0}
-        - mu_t_all: torch.Tensor, shape: (num_seq, num_steps, dim_x),
+        - mu_filt: torch.Tensor, shape: (num_seq, num_steps, dim_x),
             Dynamic latent factor filtered estimates (t|t) where first index of the second dimension has x_{0|0}
         - mu_back_all: torch.Tensor, shape: (num_seq, num_steps, dim_x),
             Dynamic latent factor smoothed estimates (t|T) where first index of the second dimension has x_{0|T}
-        - Lambda_pred_all: torch.Tensor, shape: (num_seq, num_steps, dim_x, dim_x),
+        - Lambda_pred: torch.Tensor, shape: (num_seq, num_steps, dim_x, dim_x),
             Dynamic latent factor estimation error covariance predictions (t+1|t) where first index of the second dimension has P_{1|0}
-        - Lambda_t_all: torch.Tensor, shape: (num_seq, num_steps, dim_x, dim_x),
+        - Lambda_filt: torch.Tensor, shape: (num_seq, num_steps, dim_x, dim_x),
             Dynamic latent factor estimation error covariance filtered estimates (t|t) where first index of the second dimension has P_{0|0}
         - Lambda_back_all: torch.Tensor, shape: (num_seq, num_steps, dim_x, dim_x),
             Dynamic latent factor estimation error covariance smoothed estimates (t|T) where first index of the second dimension has P_{0|T}
         '''
 
-        mu_pred_all, mu_t_all, Lambda_pred_all, Lambda_t_all = self.compute_forwards(a=a, u=u, mask=mask)
-        mu_back_all, Lambda_back_all = self.compute_backwards(mu_pred_all=mu_pred_all,
-                                                              mu_t_all=mu_t_all,
-                                                              Lambda_pred_all=Lambda_pred_all,
-                                                              Lambda_t_all=Lambda_t_all)
+        mu_pred, mu_filt, Lambda_pred, Lambda_filt = self.compute_forwards(a=a, u=u, mask=mask)
+        mu_back_all, Lambda_back_all = self.compute_backwards(mu_pred=mu_pred,
+                                                              mu_filt=mu_filt,
+                                                              Lambda_pred=Lambda_pred,
+                                                              Lambda_filt=Lambda_filt)
 
         # Swap num_seq and num_steps dimensions
-        mu_pred_all = torch.permute(mu_pred_all, (1, 0, 2))
-        mu_t_all = torch.permute(mu_t_all, (1, 0, 2))
+        mu_pred = torch.permute(mu_pred, (1, 0, 2))
+        mu_filt = torch.permute(mu_filt, (1, 0, 2))
         mu_back_all = torch.permute(mu_back_all, (1, 0, 2))
 
-        Lambda_pred_all = torch.permute(Lambda_pred_all, (1, 0, 2, 3))
-        Lambda_t_all = torch.permute(Lambda_t_all, (1, 0, 2, 3))
+        Lambda_pred = torch.permute(Lambda_pred, (1, 0, 2, 3))
+        Lambda_filt = torch.permute(Lambda_filt, (1, 0, 2, 3))
         Lambda_back_all = torch.permute(Lambda_back_all, (1, 0, 2, 3))
 
-        return mu_pred_all, mu_t_all, mu_back_all, Lambda_pred_all, Lambda_t_all, Lambda_back_all
+        return mu_pred, mu_filt, mu_back_all, Lambda_pred, Lambda_filt, Lambda_back_all
 
 
     def forward(self, a, u=None, mask=None, do_smoothing=False):
@@ -392,25 +393,25 @@ class LDM(nn.Module):
 
         Returns:
         ------------
-        - mu_pred_all: torch.Tensor, shape: (num_seq, num_steps, dim_x),
+        - mu_pred: torch.Tensor, shape: (num_seq, num_steps, dim_x),
             Dynamic latent factor predictions (t+1|t) where first index of the second dimension has x_{1|0}
-        - mu_t_all: torch.Tensor, shape: (num_seq, num_steps, dim_x),
+        - mu_filt: torch.Tensor, shape: (num_seq, num_steps, dim_x),
             Dynamic latent factor filtered estimates (t|t) where first index of the second dimension has x_{0|0}
         - mu_back_all: torch.Tensor, shape: (num_seq, num_steps, dim_x),
             Dynamic latent factor smoothed estimates (t|T) where first index of the second dimension has x_{0|T}. Ones tensor if do_smoothing is False
-        - Lambda_pred_all: torch.Tensor, shape: (num_seq, num_steps, dim_x, dim_x),
+        - Lambda_pred: torch.Tensor, shape: (num_seq, num_steps, dim_x, dim_x),
             Dynamic latent factor estimation error covariance predictions (t+1|t) where first index of the second dimension has P_{1|0}
-        - Lambda_t_all: torch.Tensor, shape: (num_seq, num_steps, dim_x, dim_x),
+        - Lambda_filt: torch.Tensor, shape: (num_seq, num_steps, dim_x, dim_x),
             Dynamic latent factor estimation error covariance filtered estimates (t|t) where first index of the second dimension has P_{0|0}
         - Lambda_back_all: torch.Tensor, shape: (num_seq, num_steps, dim_x, dim_x),
             Dynamic latent factor estimation error covariance smoothed estimates (t|T) where first index of the second dimension has P_{0|T}. Ones tensor if do_smoothing is False
         '''
 
         if do_smoothing:
-            mu_pred_all, mu_t_all, mu_back_all, Lambda_pred_all, Lambda_t_all, Lambda_back_all = self.smooth(a=a, u=u, mask=mask)
+            mu_pred, mu_filt, mu_back_all, Lambda_pred, Lambda_filt, Lambda_back_all = self.smooth(a=a, u=u, mask=mask)
         else:
-            mu_pred_all, mu_t_all, Lambda_pred_all, Lambda_t_all = self.filter(a=a, u=u, mask=mask)
-            mu_back_all = torch.ones_like(mu_t_all, device=mu_t_all.device)
-            Lambda_back_all = torch.ones_like(Lambda_t_all, device=Lambda_t_all.device)
+            mu_pred, mu_filt, Lambda_pred, Lambda_filt = self.filter(a=a, u=u, mask=mask)
+            mu_back_all = torch.ones_like(mu_filt, device=mu_filt.device)
+            Lambda_back_all = torch.ones_like(Lambda_filt, device=Lambda_filt.device)
 
-        return mu_pred_all, mu_t_all, mu_back_all, Lambda_pred_all, Lambda_t_all, Lambda_back_all
+        return mu_pred, mu_filt, mu_back_all, Lambda_pred, Lambda_filt, Lambda_back_all
