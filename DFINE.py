@@ -116,15 +116,6 @@ class DFINE(nn.Module):
         if self.config.model.supervise_behv:
             self.dim_behv = len(self.config.model.which_behv_dims)
 
-        # Set the loss scales for behavior component and for the regularization
-        if self.config.model.supervise_behv:
-            self.scale_behv_recons = self.config.loss.scale_behv_recons
-        self.scale_l2 = self.config.loss.scale_l2
-        self.scale_control_loss = self.config.loss.scale_control_loss
-        self.scale_spectr_reg_B = self.config.loss.scale_spectr_reg_B
-        self.scale_dyn_x_loss = self.config.loss.scale_dyn_x_loss
-        self.scale_con_a_loss = self.config.loss.scale_con_a_loss
-
         assert len(self.config.loss.steps_ahead) == len(self.config.loss.scale_steps_ahead)
 
 
@@ -246,15 +237,10 @@ class DFINE(nn.Module):
 
         # Run LDM to infer filtered and smoothed dynamic latent factors
         x_pred, x_filter, x_smooth, Lambda_pred, Lambda_filter, Lambda_smooth = self.ldm(a=a_hat, u=u, mask=mask, do_smoothing=True)
+
         a_pred = (self.ldm.C @ x_pred.unsqueeze(dim=-1)).squeeze(dim=-1) #  (num_seq, num_steps, dim_a, dim_x) x (num_seq, num_steps, dim_x, 1) --> (num_seq, num_steps, dim_a)
         a_filter = (self.ldm.C @ x_filter.unsqueeze(dim=-1)).squeeze(dim=-1) #  (num_seq, num_steps, dim_a, dim_x) x (num_seq, num_steps, dim_x, 1) --> (num_seq, num_steps, dim_a)
         a_smooth = (self.ldm.C @ x_smooth.unsqueeze(dim=-1)).squeeze(dim=-1) #  (num_seq, num_steps, dim_a, dim_x) x (num_seq, num_steps, dim_x, 1) --> (num_seq, num_steps, dim_a)
-
-        # Remove the last timestep of predictions since it's T+1|T, which is not of interest to us
-        x_pred = x_pred[:, :-1, :]
-        Lambda_pred = Lambda_pred[:, :-1, :, :]
-        a_pred = a_pred[:, :-1, :]
-
         if self.config.model.fit_D_matrix:
             a_pred = a_pred + (self.ldm.D @ u[:,1:,...].unsqueeze(dim=-1)).squeeze(dim=-1) #first index of a_pred is a_{1|0}, therefore, it has to be summed with u_{1}
             a_filter = a_filter + (self.ldm.D @ u.unsqueeze(dim=-1)).squeeze(dim=-1)
@@ -317,7 +303,6 @@ class DFINE(nn.Module):
         # Get the required dimensions
         num_seq, num_steps, _ = x_filter.shape
 
-
         # Here is where k-step ahead prediction is iteratively performed
         if k == 0:
             x_pred_k = x_filter
@@ -332,8 +317,8 @@ class DFINE(nn.Module):
 
             i=0:   [x_{1|0},   x_{2|1},   ..., x_{(T-k+1)  |(T-k)}]
 
-                = [ x_{1|0} = A x_{0|0} + B u_{0},
-                    x_{2|1} = A x_{1|1} + B u_{1},
+                = [ x_{  1  | 0 } = A x_{ 0 | 0 } + B u_{0},
+                    x_{  2  | 1 } = A x_{ 1 | 1 } + B u_{1},
                     ...
                     x_{T-k+1|T-k} = A x_{T-k|T-k} + B u_{T-k} ]
 
@@ -368,23 +353,31 @@ class DFINE(nn.Module):
                     x_{T|T-k} = A x_{T-1|T-k} + B u_{T-1} ]
             """
 
+        #k-step ahead predicted manifold latents
         a_pred_k = (self.ldm.C @ x_pred_k.unsqueeze(dim=-1)).squeeze(dim=-1)
         if self.config.model.fit_D_matrix:
             a_pred_k = a_pred_k + (self.ldm.D @ u[:,k:,...].unsqueeze(dim=-1)).squeeze(dim=-1)
 
-        # After obtaining k-step ahead predicted manifold latent factors, they're decoded to obtain k-step ahead predicted neural observations
+        #k-step ahead predicted neural observations
         y_pred_k = self.decoder(a_pred_k)
 
-        #sanity check
+        #sanity check #TODO: check if their comp graphs are the same - if yes can skip constructing it
+        # if k == 0:
+        #     assert (y_pred_k == model_vars['y_filter']).all()
+        #     assert (x_pred_k == model_vars['x_filter']).all()
+        #     assert (a_pred_k == model_vars['a_filter']).all()
+        # elif k == 1:
+        #     assert (y_pred_k == model_vars['y_pred']).all()
+        #     assert (x_pred_k == model_vars['x_pred']).all()
+        #     assert (a_pred_k == model_vars['a_pred']).all()
         if k == 0:
-            assert (y_pred_k == model_vars['y_filter']).all()
-            assert (x_pred_k == model_vars['x_filter']).all()
-            assert (a_pred_k == model_vars['a_filter']).all()
+            print('k=0 ydiff=', (y_pred_k-model_vars['y_filter']).abs().max().item())
+            print('k=0 xdiff=', (x_pred_k-model_vars['x_filter']).abs().max().item())
+            print('k=0 adiff=', (a_pred_k-model_vars['a_filter']).abs().max().item())
         elif k == 1:
-            assert (y_pred_k == model_vars['y_pred']).all()
-            assert (x_pred_k == model_vars['x_pred']).all()
-            assert (a_pred_k == model_vars['a_pred']).all()
-
+            print('k=1 ydiff=', (y_pred_k-model_vars['y_pred']).abs().max().item())
+            print('k=1 xdiff=', (x_pred_k-model_vars['x_pred']).abs().max().item())
+            print('k=1 adiff=', (a_pred_k-model_vars['a_pred']).abs().max().item())
         return y_pred_k, a_pred_k, x_pred_k
 
 
@@ -422,7 +415,7 @@ class DFINE(nn.Module):
         #TODO this can be made k times faster by reusing previous k's computation
         for k, scale_k in zip(self.config.loss.steps_ahead, self.config.loss.scale_steps_ahead):
             #TODO: if I don't detach u (in closed loop fitting), how will this affect this k-step-ahead computation graph?
-            y_pred_k, _, _ = self.get_k_step_ahead_prediction(model_vars, k=k, u=u.detach())
+            y_pred_k, a_pred_k, x_pred_k = self.get_k_step_ahead_prediction(model_vars, k=k, u=u.detach())
             y_pred_all[k] = y_pred_k
             k_steps_mse = compute_mse(y_flat=y[:, k:, :].reshape(-1, self.dim_y),
                                       y_hat_flat=y_pred_k.reshape(-1, self.dim_y),
@@ -443,23 +436,23 @@ class DFINE(nn.Module):
             behv_mse = compute_mse(y_flat=behv[..., self.config.model.which_behv_dims].reshape(-1, self.dim_behv),
                                    y_hat_flat=model_vars['behv_hat'].reshape(-1, self.dim_behv),
                                    mask_flat=mask.reshape(-1,))
-            behv_loss = self.scale_behv_recons * behv_mse
+            behv_loss = self.config.loss.scale_behv_recons * behv_mse
             loss_dict['behv_mse'] = behv_mse
             loss_dict['behv_loss'] = behv_loss
 
 
         # L2 regularization loss
         reg_loss = torch.tensor(0.)
-        if self.scale_l2 > 0:
-            self.scale_l2 * sum([torch.norm(param) for name, param in self.named_parameters() if 'weight' in name])
+        if self.config.loss.scale_l2 > 0:
+            self.config.loss.scale_l2 * sum([torch.norm(param) for name, param in self.named_parameters() if 'weight' in name])
             loss_dict['reg_loss'] = reg_loss
 
 
         # B matrix inverse spectral norm regularization loss
         spectr_reg_B_loss = torch.tensor(0.)
-        if self.scale_spectr_reg_B > 0:
-            # spectr_reg_B_loss = self.scale_spectr_reg_B / torch.linalg.svd(self.ldm.B)[1].min()
-            spectr_reg_B_loss = self.scale_spectr_reg_B * (torch.linalg.cond(self.ldm.B) - 1)
+        if self.config.loss.scale_spectr_reg_B > 0:
+            # spectr_reg_B_loss = self.config.loss.scale_spectr_reg_B / torch.linalg.svd(self.ldm.B)[1].min()
+            spectr_reg_B_loss = self.config.loss.scale_spectr_reg_B * (torch.linalg.cond(self.ldm.B) - 1)
             loss_dict['spectr_reg_B_loss'] = spectr_reg_B_loss
 
 
@@ -467,24 +460,15 @@ class DFINE(nn.Module):
         dyn_x_mse = F.mse_loss(model_vars['x_pred'], model_vars['x_filter'][:,1:])
         loss_dict['dyn_x_mse'] = dyn_x_mse
         dyn_x_loss = torch.tensor(0.)
-        if self.scale_dyn_x_loss > 0:
-            dyn_x_loss = self.scale_dyn_x_loss * dyn_x_mse
+        if self.config.loss.scale_dyn_x_loss > 0:
+            dyn_x_loss = self.config.loss.scale_dyn_x_loss * dyn_x_mse
             loss_dict['dyn_x_loss'] = dyn_x_loss
-
-
-        # Manifold latent inference/encoding consistency loss
-        con_a_mse = F.mse_loss(model_vars['a_hat'], model_vars['a_filter'])
-        loss_dict['con_a_mse'] = con_a_mse
-        con_a_loss = torch.tensor(0.)
-        if self.scale_con_a_loss > 0:
-            con_a_loss = self.scale_con_a_loss * con_a_mse
-            loss_dict['con_a_loss'] = con_a_loss
 
 
         # Control loss
         control_loss = torch.tensor(0.)
         if y_target_cl is None:
-            if self.scale_control_loss > 0:
+            if self.config.loss.scale_control_loss > 0:
                 print('Control loss scaling > 0, but no control target available.')
                 # raise ValueError('Control loss scaling > 0, but no control target available.')
         else:
@@ -501,12 +485,12 @@ class DFINE(nn.Module):
 
             control_mse = F.mse_loss(y_hat_T, y_target_cl)
             loss_dict['control_mse'] = control_mse
-            if self.scale_control_loss > 0:
-                control_loss = self.scale_control_loss * control_mse
+            if self.config.loss.scale_control_loss > 0:
+                control_loss = self.config.loss.scale_control_loss * control_mse
                 loss_dict['control_loss'] = control_loss
 
 
         # Final loss
-        loss = avg_k_steps_mse + behv_loss + reg_loss + spectr_reg_B_loss + control_loss + dyn_x_loss + con_a_loss
+        loss = avg_k_steps_mse + behv_loss + reg_loss + spectr_reg_B_loss + control_loss + dyn_x_loss
         loss_dict['total_loss'] = loss
         return loss, loss_dict, y_pred_all

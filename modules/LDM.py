@@ -191,7 +191,7 @@ class LDM(nn.Module):
         mu_pred_t = self.mu_0.unsqueeze(dim=0).repeat(num_seq, 1) #[b,x]
         Lambda_pred_t = self.Lambda_0.unsqueeze(dim=0).repeat(num_seq, 1, 1) #[b,x,x]
 
-        # Filtered and predicted estimates/error covariance. NOTE: The last time-step of the prediction has T+1|T, which may not be of interest
+        # Filtered and predicted estimates/error covariance
         mu_filt = [] #mu_filt[t,i,:] = mu_{t|t} for t=0..T-1
         Lambda_filt = []
         mu_pred = [] #mu_pred[t,i,:] = mu_{t+1|t} for t=0..T-1
@@ -199,7 +199,7 @@ class LDM(nn.Module):
 
         # Get covariance matrices
         W, R = self._get_covariance_matrices()
-        I = torch.eye(self.dim_x, device=self.mu_0.device, dtype=self.mu_0.dtype)
+        I = torch.eye(self.dim_x, device=self.C.device, dtype=self.C.dtype)
 
         for t in range(num_steps):
             # Obtain residual
@@ -224,16 +224,16 @@ class LDM(nn.Module):
             Lambda_filt_t = I_KC @ Lambda_pred_t @ I_KC.transpose(-1,-2) + K @ R @ K.transpose(-1,-2)
             Lambda_filt_t = 0.5 * (Lambda_filt_t + Lambda_filt_t.transpose(-1,-2)) #symmetrize
 
-            # Prediction
-            u_t = u[:, t, ...] if t < num_steps-1 else torch.full((num_seq, self.dim_u), torch.nan) #last timestep of predictions will be dropped since it's T+1|T so give it dummy input to expose potential bugs
-            mu_pred_t = (self.A @ mu_t.unsqueeze(dim=-1) + self.B @ u_t.clone().unsqueeze(dim=-1)).squeeze(dim=-1) #[x,x]@[b,x,1]+[x,u]@[b,u,1]->[b,x,1]->[b,x]
-            Lambda_pred_t = self.A @ Lambda_filt_t @ self.A.T + W #[x,x]@[b,x,x]@[x,x]+[x,x]->[b,x,x]
-
-            # Store predictions and updates
             mu_filt.append(mu_t)
             Lambda_filt.append(Lambda_filt_t)
-            mu_pred.append(mu_pred_t)
-            Lambda_pred.append(Lambda_pred_t)
+
+            # Prediction
+            if t < num_steps-1: #the last time-step of the prediction has T+1|T, which is not of interest
+                u_t = u[:, t, ...]
+                mu_pred_t = (self.A @ mu_t.clone().unsqueeze(dim=-1) + self.B @ u_t.clone().unsqueeze(dim=-1)).squeeze(dim=-1) #[x,x]@[b,x,1]+[x,u]@[b,u,1]->[b,x,1]->[b,x]
+                Lambda_pred_t = self.A @ Lambda_filt_t @ self.A.T + W #[x,x]@[b,x,x]@[x,x]+[x,x]->[b,x,x]
+                mu_pred.append(mu_pred_t)
+                Lambda_pred.append(Lambda_pred_t)
 
         mu_pred = torch.stack(mu_pred, dim=0) #[t,b,x]
         mu_filt = torch.stack(mu_filt, dim=0) #[t,b,x]
